@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <!-- Mostrar/ocultar los recuadros de tiempo libre entre clases -->
+    <item
+        android:id="@+id/action_tiempo_libre"
+        android:icon="@drawable/ic_cafe"
+        android:title="Tiempo libre entre clases"
+        app:iconTint="@color/text_primary"
+        app:showAsAction="always" />
+    <!-- Volver a traer el horario de MiUV (si no cargó al iniciar sesión) -->
+    <item
+        android:id="@+id/action_recargar_horario"
+        android:icon="@drawable/ic_refresh"
+        android:title="Volver a cargar horario"
+        app:iconTint="@color/text_primary"
+        app:showAsAction="always" />
+</menu>

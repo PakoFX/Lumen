@@ -21,6 +21,8 @@ class SessionManager(context: Context) {
     companion object {
         private const val KEY_STUDENT_CREDENTIAL = "key_student_credential_json"
         private const val KEY_CACHED_COURSES = "key_cached_courses_json"
+        private const val KEY_HORARIO = "horario_miuv"
+        private const val KEY_HORARIO_FECHA = "horario_miuv_fecha"
         private const val KEY_SESSION_EXPIRED = "key_session_expired"
         const val KEY_DARK_MODE = "key_dark_mode_enabled"
     }
@@ -151,6 +153,7 @@ class SessionManager(context: Context) {
         nombreRespaldo: String?,
         matriculaRespaldo: String?
     ) {
+        datos.horario?.let { guardarHorario(it) }
         // Recién iniciada la sesión, Eminus a veces aún no ha reportado el usuario:
         // se usa la matrícula que la persona escribió en el login.
         val matricula = getMatriculaSesion() ?: normalizarMatricula(matriculaRespaldo) ?: return
@@ -173,10 +176,30 @@ class SessionManager(context: Context) {
                 area = datos.area ?: base.area,
                 nivel = datos.nivel ?: base.nivel,
                 photo = datos.fotoLocal ?: base.photo,
+                qrCode = datos.qrOficial ?: base.qrCode,
                 actualizadoMiuv = System.currentTimeMillis()
             )
         )
     }
+
+    // ===================== HORARIO (MiUV) =====================
+    // Se guarda con la sesión: al cerrar sesión se borra y al volver a entrar se descarga de nuevo.
+
+    fun guardarHorario(clases: List<com.pako.eminus4.data.model.ClaseHorario>) {
+        prefs.edit()
+            .putString(KEY_HORARIO, gson.toJson(clases))
+            .putLong(KEY_HORARIO_FECHA, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun getHorario(): List<com.pako.eminus4.data.model.ClaseHorario>? {
+        val json = prefs.getString(KEY_HORARIO, null) ?: return null
+        return try {
+            gson.fromJson(json, object : TypeToken<List<com.pako.eminus4.data.model.ClaseHorario>>() {}.type)
+        } catch (_: Exception) { null }
+    }
+
+    fun getHorarioFecha(): Long = prefs.getLong(KEY_HORARIO_FECHA, 0L)
 
     /** "zS24022198" / "zs24022198" -> "S24022198"; null si viene vacío. */
     fun normalizarMatricula(id: String?): String? {
@@ -196,8 +219,25 @@ class SessionManager(context: Context) {
     }
 
     /**
+     * "Cerrar sesión" a propósito: además de la sesión, borra lo que es de la cuenta y queda en el
+     * celular (credencial y su foto, documentos abiertos/descargados, entregas y adjuntos en caché,
+     * horas de término puestas a mano, novedades vistas). Así un celular prestado no conserva nada.
+     * Las preferencias de la app (tema, emojis, filtros) se quedan. NO se usa cuando la sesión solo caduca.
+     */
+    fun borrarDatosDeCuenta() {
+        clearSession(preserveCredential = false)
+        java.io.File(appContext.filesDir, "credencial").listFiles()?.forEach { it.delete() }
+        listOf("temp_docs", "entregas", "adjuntos").forEach { java.io.File(appContext.cacheDir, it).deleteRecursively() }
+        appContext.getSharedPreferences("novedades", Context.MODE_PRIVATE).edit().clear().apply()
+        // Horario: se borran las horas de término a mano; el ajuste "mostrar tiempo libre" se queda
+        val fines = appContext.getSharedPreferences("horario_fines", Context.MODE_PRIVATE)
+        val mostrarLibre = fines.getBoolean("mostrar_libre", false)
+        fines.edit().clear().putBoolean("mostrar_libre", mostrarLibre).apply()
+    }
+
+    /**
      * Cierra la sesión activa. Por defecto preserva la credencial descargada
-     * para que el estudiante nunca la pierda.
+     * (la sesión puede caducar o renovarse sin que el estudiante la pierda).
      */
     fun clearSession(preserveCredential: Boolean = true) {
         val savedCredential = if (preserveCredential) getStudentCredential() else null

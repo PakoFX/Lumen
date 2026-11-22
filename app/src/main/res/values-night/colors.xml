@@ -52,5 +52,11 @@
     <color name="banner_offline_bg">#422006</color>
     <color name="banner_offline_text">#FDE68A</color>
     <color name="banner_offline_btn_bg">#78350F</color>
+    <!-- Pastillas y recuadros de números (bg_stat_pill) -->
+    <color name="stat_pill_bg">#1E293B</color>
+    <color name="stat_pill_stroke">#2B3A50</color>
+    <!-- Avatar sin foto -->
+    <color name="avatar_vacio_fondo">#334155</color>
+    <color name="avatar_vacio_silueta">#CBD5E1</color>
 </resources>
 

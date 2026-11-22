@@ -216,11 +216,9 @@ class ActivityDetailActivity : AppCompatActivity() {
         webTeacherFeedback       = findViewById(R.id.webTeacherFeedback)
 
         // Configuración de WebViews auxiliares
-        webDescription.settings.javaScriptEnabled = true
-        webDescription.setBackgroundColor(Color.TRANSPARENT)
-
-        webTeacherFeedback.settings.javaScriptEnabled = true
-        webTeacherFeedback.setBackgroundColor(Color.TRANSPARENT)
+        // HTML de Eminus con colores del tema y enlaces fuera de la app
+        com.pako.eminus4.util.HtmlEminus.preparar(webDescription)
+        com.pako.eminus4.util.HtmlEminus.preparar(webTeacherFeedback)
 
         txtActivityTitle.text  = activityTitleText
         txtCourseSubtitle.text = courseName
@@ -348,7 +346,7 @@ class ActivityDetailActivity : AppCompatActivity() {
         if (cal != null) {
             badgeStatus.text = "Calificada (${"%.1f".format(cal)}/${"%.0f".format(valor)})"
             badgeStatus.setBackgroundResource(R.drawable.bg_pill_active)
-            badgeStatus.setTextColor(ContextCompat.getColor(this, R.color.badge_success_text))
+            badgeStatus.setTextColor(android.graphics.Color.WHITE)
             txtScoreValue.text = "Calificación: ${"%.1f".format(cal)}"
         } else if (detail.estaEntregada) {
             badgeStatus.text = "Entregada"
@@ -392,10 +390,10 @@ class ActivityDetailActivity : AppCompatActivity() {
         // Descripción / Instrucciones HTML
         val descHtml = detail.descripcion
         if (!descHtml.isNullOrBlank()) {
-            if (descHtml.contains("<img", true) || descHtml.contains("<table", true)) {
+            if (com.pako.eminus4.util.HtmlEminus.necesitaWeb(descHtml)) {
                 txtDescription.visibility = View.GONE
                 webDescription.visibility = View.VISIBLE
-                webDescription.loadDataWithBaseURL("https://eminus.uv.mx", formatHtmlForDisplay(descHtml), "text/html", "UTF-8", null)
+                com.pako.eminus4.util.HtmlEminus.cargar(webDescription, descHtml, 14)
             } else {
                 webDescription.visibility = View.GONE
                 txtDescription.visibility = View.VISIBLE
@@ -629,10 +627,10 @@ class ActivityDetailActivity : AppCompatActivity() {
         val descRev = delivery.descRevision
         if (!descRev.isNullOrBlank()) {
             cardTeacherFeedback.visibility = View.VISIBLE
-            if (descRev.contains("<img", true) || descRev.contains("<table", true)) {
+            if (com.pako.eminus4.util.HtmlEminus.necesitaWeb(descRev)) {
                 txtTeacherFeedback.visibility = View.GONE
                 webTeacherFeedback.visibility = View.VISIBLE
-                webTeacherFeedback.loadDataWithBaseURL("https://eminus.uv.mx", formatHtmlForDisplay(descRev), "text/html", "UTF-8", null)
+                com.pako.eminus4.util.HtmlEminus.cargar(webTeacherFeedback, descRev, 14)
             } else {
                 webTeacherFeedback.visibility = View.GONE
                 txtTeacherFeedback.visibility = View.VISIBLE
@@ -642,38 +640,6 @@ class ActivityDetailActivity : AppCompatActivity() {
         } else {
             cardTeacherFeedback.visibility = View.GONE
         }
-    }
-
-    private fun formatHtmlForDisplay(html: String): String {
-        return """
-            <!DOCTYPE html>
-            <html>
-            <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-              body {
-                margin: 0;
-                padding: 0;
-                font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif;
-                font-size: 14px;
-                color: #1E293B;
-                line-height: 1.5;
-                background-color: transparent;
-              }
-              img {
-                max-width: 100%;
-                height: auto;
-                border-radius: 8px;
-                margin: 6px 0;
-                display: block;
-              }
-              p { margin: 0 0 8px 0; }
-              a { color: #0284C7; }
-            </style>
-            </head>
-            <body>$html</body>
-            </html>
-        """.trimIndent()
     }
 
     private fun descargarConDownloadManager(downloadUrl: String, fileName: String) {
@@ -812,6 +778,8 @@ class ActivityDetailActivity : AppCompatActivity() {
                         limpiarArchivoSeleccionado()
                         modoEdicion = false   // entrega actualizada: volver a solo lectura
                         Toast.makeText(this, "Entrega enviada a Eminus", Toast.LENGTH_LONG).show()
+                        // Ya entregada: dejar de recordarla al instante
+                        com.pako.eminus4.notificaciones.Recordatorios.quitarTarea(this, idCurso, idActividad)
                         // Si el usuario navegó a otra actividad mientras tanto, no recargamos encima
                         if (activityId == idActividad) cargarDetalleActividad()
                     }.onFailure { e ->

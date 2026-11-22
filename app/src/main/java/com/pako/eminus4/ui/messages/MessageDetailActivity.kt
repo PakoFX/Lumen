@@ -109,8 +109,36 @@ class MessageDetailActivity : AppCompatActivity() {
         cardAttachments = findViewById(R.id.cardAttachments)
         layoutAttachmentsList = findViewById(R.id.layoutAttachmentsList)
 
-        webBody.settings.javaScriptEnabled = true
-        webBody.setBackgroundColor(Color.TRANSPARENT)
+        com.pako.eminus4.util.HtmlEminus.preparar(webBody)
+    }
+
+    /**
+     * "Responder" solo si el mensaje lo envió otra persona y su curso sigue vigente
+     * (igual que Eminus web: no se responde en cursos concluidos).
+     */
+    private fun configurarResponder(detail: MessageDetail) {
+        val fab = findViewById<com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton>(R.id.fabResponder)
+        val sm = com.pako.eminus4.core.SessionManager(this)
+        val remitente = detail.remitente
+        val idCurso = remitente?.idCurso
+        val esMio = sm.normalizarMatricula(remitente?.idUsuario) == sm.getMatriculaSesion()
+        val cursoVigente = idCurso != null && sm.getCachedCourses().any { it.idCurso == idCurso && it.isActivo() }
+        if (remitente == null || idCurso == null || esMio || !cursoVigente) {
+            fab.visibility = View.GONE
+            return
+        }
+        fab.visibility = View.VISIBLE
+        val margen = (16 * resources.displayMetrics.density).toInt()
+        ViewCompat.setOnApplyWindowInsetsListener(fab) { v, insets ->
+            val nav = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            (v.layoutParams as android.view.ViewGroup.MarginLayoutParams).bottomMargin = margen + nav.bottom
+            v.requestLayout()
+            insets
+        }
+        ViewCompat.requestApplyInsets(fab)
+        fab.setOnClickListener {
+            ComposeMessageActivity.startRespuesta(this, idCurso, remitente.idUsuario, detail.asunto, detail.idMensaje)
+        }
     }
 
     private fun cargarDetalle() {
@@ -134,6 +162,7 @@ class MessageDetailActivity : AppCompatActivity() {
         txtSubject.text = detail.asunto ?: "(Sin asunto)"
 
         val sender = detail.remitente
+        configurarResponder(detail)
         val courseName = sender?.nombreCurso ?: "Mensaje General"
         txtCourseTag.text = courseName.replace(Regex("""\s*\(\d+\)\s*$"""), "").trim()
 
@@ -156,10 +185,10 @@ class MessageDetailActivity : AppCompatActivity() {
 
         // Cuerpo HTML
         val html = detail.mensaje ?: ""
-        if (html.contains("<table", true) || html.contains("<img", true)) {
+        if (com.pako.eminus4.util.HtmlEminus.necesitaWeb(html)) {
             txtBody.visibility = View.GONE
             webBody.visibility = View.VISIBLE
-            webBody.loadDataWithBaseURL("https://eminus.uv.mx", formatHtml(html), "text/html", "UTF-8", null)
+            com.pako.eminus4.util.HtmlEminus.cargar(webBody, html, 15)
         } else {
             webBody.visibility = View.GONE
             txtBody.visibility = View.VISIBLE
@@ -228,27 +257,6 @@ class MessageDetailActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Toast.makeText(this, "Error al descargar: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    private fun formatHtml(content: String): String {
-        return """
-            <!DOCTYPE html>
-            <html>
-            <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-              body {
-                margin: 0; padding: 0;
-                font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif;
-                font-size: 15px; color: #1E293B; line-height: 1.6;
-              }
-              img { max-width: 100%; height: auto; border-radius: 8px; }
-              a { color: #0284C7; }
-            </style>
-            </head>
-            <body>$content</body>
-            </html>
-        """.trimIndent()
     }
 
     private fun formatearFecha(isoDate: String?): String {

@@ -10,6 +10,9 @@ object Constants {
     // Repositorio estático (Thumbnails, perfiles, adjuntos)
     const val REPOSITORY_URL = "https://eminus.uv.mx/eminusapi/"
 
+    // Páginas web del Contenido (elementos tipo 5): eminusapi/drive/<ruta del recurso>/<paginaInicio>
+    const val EMINUS_DRIVE_URL = "https://eminus.uv.mx/eminusapi/drive/"
+
     // URL de Login y Portal Eminus
     const val EMINUS_LOGIN_URL = "https://eminus.uv.mx/eminus4/"
 

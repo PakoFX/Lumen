@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Menú lateral (hamburguesa). Mensajes y Perfil quedan fuera, en la barra superior. -->
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <group
+        android:id="@+id/grupoPantallas"
+        android:checkableBehavior="single">
+        <item
+            android:id="@+id/nav_courses"
+            android:checked="true"
+            android:icon="@drawable/ic_nav_courses"
+            android:title="Cursos" />
+        <item
+            android:id="@+id/nav_notifications"
+            android:icon="@drawable/ic_nav_notifications"
+            android:title="Avisos"
+            app:actionLayout="@layout/item_drawer_badge" />
+    </group>
+
+    <group android:id="@+id/grupoAccesos">
+        <item
+            android:id="@+id/nav_actividades"
+            android:icon="@drawable/ic_assignment"
+            android:title="Mis actividades"
+            app:actionLayout="@layout/item_drawer_badge" />
+        <item
+            android:id="@+id/nav_foros"
+            android:icon="@drawable/ic_forum"
+            android:title="Foros"
+            app:actionLayout="@layout/item_drawer_badge" />
+        <item
+            android:id="@+id/nav_examenes"
+            android:icon="@drawable/ic_quiz"
+            android:title="Exámenes"
+            app:actionLayout="@layout/item_drawer_badge" />
+    </group>
+</menu>

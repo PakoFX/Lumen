@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
@@ -17,47 +17,39 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:paddingHorizontal="16dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="8dp">
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            app:layout_scrollFlags="scroll|enterAlways|snap">
 
+            <!-- Filtro actual (toca para desplegar u ocultar los filtros y ahorrar pantalla) -->
             <LinearLayout
+                android:id="@+id/btnDesplegarFiltros"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="36dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:contentDescription="Mostrar u ocultar filtros"
+                android:focusable="true"
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <LinearLayout
-                    android:layout_width="0dp"
+                <TextView
+                    android:id="@+id/txtFiltroActual"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:text="Activos"
+                    android:textColor="@color/text_primary"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
 
-                    <TextView
-                        android:id="@+id/txtGreeting"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="¡Hola!"
-                        android:textColor="@color/text_primary"
-                        android:textSize="20sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/txtStudentCampus"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Universidad Veracruzana"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="12sp" />
-                </LinearLayout>
-
-                <ImageButton
-                    android:id="@+id/btnRefreshCourses"
-                    android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Recargar"
-                    android:src="@drawable/ic_nav_reload"
-                    app:tint="@color/text_body" />
+                <ImageView
+                    android:id="@+id/imgDesplegarFiltros"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:layout_marginStart="2dp"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/ic_expand_more"
+                    app:tint="@color/text_secondary" />
             </LinearLayout>
 
             <!-- Filtros rápidos de materias -->
@@ -65,12 +57,12 @@
                 android:id="@+id/chipGroupFilters"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:visibility="gone"
                 app:singleSelection="true">
 
                 <com.google.android.material.chip.Chip
                     android:id="@+id/chipFilterActivos"
-                    style="@style/Widget.Material3.Chip.Filter"
+                    style="@style/Lumen.Chip.Filtro"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:checked="true"
@@ -78,11 +70,46 @@
 
                 <com.google.android.material.chip.Chip
                     android:id="@+id/chipFilterTodos"
-                    style="@style/Widget.Material3.Chip.Filter"
+                    style="@style/Lumen.Chip.Filtro"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="Todos los Cursos" />
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/chipFilterArchivados"
+                    style="@style/Lumen.Chip.Filtro"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Archivados" />
             </com.google.android.material.chip.ChipGroup>
+
+            <!-- Buscador: aparece en "Todos" y "Archivados" (pueden ser muchas materias) -->
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/layoutBuscarCurso"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox.Dense"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="6dp"
+                android:visibility="gone"
+                app:boxCornerRadiusBottomEnd="12dp"
+                app:boxCornerRadiusBottomStart="12dp"
+                app:boxCornerRadiusTopEnd="12dp"
+                app:boxCornerRadiusTopStart="12dp"
+                app:endIconMode="clear_text"
+                app:hintEnabled="false"
+                app:startIconDrawable="@drawable/ic_search">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/editBuscarCurso"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Buscar materia o NRC"
+                    android:imeOptions="actionSearch"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:textSize="14sp" />
+            </com.google.android.material.textfield.TextInputLayout>
 
         </LinearLayout>
     </com.google.android.material.appbar.AppBarLayout>

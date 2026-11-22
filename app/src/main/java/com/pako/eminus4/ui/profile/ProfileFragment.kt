@@ -82,13 +82,7 @@ class ProfileFragment : Fragment() {
     }
 
     private fun inicializarVistas(view: View) {
-        val appBarLayout = view.findViewById<View>(R.id.appBarLayout)
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(appBarLayout) { v, insets ->
-            val systemBars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-            val bannerVisible = (activity as? com.pako.eminus4.ui.main.MainActivity)?.isBannerVisible() == true
-            v.setPadding(0, if (bannerVisible) 0 else systemBars.top, 0, 0)
-            insets
-        }
+        // La barra de estado la cubre la barra superior de MainActivity
 
         imgAvatar = view.findViewById(R.id.imgAvatar)
         txtStudentName = view.findViewById(R.id.txtStudentName)
@@ -99,14 +93,15 @@ class ProfileFragment : Fragment() {
         clockProfileLive = view.findViewById(R.id.clockProfileLive)
         cardStudentCredential = view.findViewById(R.id.cardStudentCredential)
         btnOpenCredential = view.findViewById(R.id.btnOpenCredential)
+        view.findViewById<MaterialButton>(R.id.btnRecargarFoto).setOnClickListener { b -> recargarFoto(b as MaterialButton) }
         txtEmailUv = view.findViewById(R.id.txtEmailUv)
 
-        val abrirCredencial = View.OnClickListener {
+        // La credencial se abre SOLO con su botón (tocar la tarjeta hacía lo mismo: redundante)
+        btnOpenCredential.setOnClickListener {
             CredentialFullscreenActivity.start(requireContext())
         }
-        cardStudentCredential.setOnClickListener(abrirCredencial)
-        btnOpenCredential.setOnClickListener(abrirCredencial)
 
+        // Mantener presionada la tarjeta: editar los datos de la credencial
         cardStudentCredential.setOnLongClickListener {
             mostrarDialogoEditarCredencial()
             true
@@ -114,6 +109,10 @@ class ProfileFragment : Fragment() {
         txtEmailAlternate = view.findViewById(R.id.txtEmailAlternate)
         layoutAlternateEmail = view.findViewById(R.id.layoutAlternateEmail)
         txtSessionStatus = view.findViewById(R.id.txtSessionStatus)
+        try {
+            (requireContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager)
+                .registerDefaultNetworkCallback(escuchaRed)
+        } catch (_: Exception) { }
         btnCheckUpdates = view.findViewById(R.id.btnCheckUpdates)
         btnLogout = view.findViewById(R.id.btnLogout)
         layoutDarkModeToggle = view.findViewById(R.id.layoutDarkModeToggle)
@@ -141,10 +140,21 @@ class ProfileFragment : Fragment() {
         btnCheckUpdates.setOnClickListener {
             AppUpdater.verificarActualizaciones(requireActivity(), silent = false)
         }
+        view.findViewById<View>(R.id.btnNotificaciones).setOnClickListener {
+            com.pako.eminus4.notificaciones.NotificacionesActivity.start(requireContext())
+        }
+        view.findViewById<View>(R.id.btnSugerencias).setOnClickListener {
+            SugerenciasActivity.start(requireContext())
+        }
+        view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnQueHayDeNuevo).apply {
+            text = "Qué hay de nuevo · v${com.pako.eminus4.ui.novedades.QueHayDeNuevo.versionActual(requireContext())}"
+            setOnClickListener { com.pako.eminus4.ui.novedades.QueHayDeNuevo.mostrarTodo(requireContext()) }
+        }
 
         btnLogout.setOnClickListener {
             mostrarDialogoCerrarSesion()
         }
+        view.findViewById<View>(R.id.btnPrivacidad).setOnClickListener { AvisoPrivacidad.mostrar(requireContext()) }
     }
 
     private fun iniciarRelojPerfil() {
@@ -155,6 +165,10 @@ class ProfileFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         clockHandler.removeCallbacks(clockRunnable)
+        try {
+            (requireContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager)
+                .unregisterNetworkCallback(escuchaRed)
+        } catch (_: Exception) { }
     }
 
     /**
@@ -283,20 +297,68 @@ class ProfileFragment : Fragment() {
             imgAvatar.load(avatarUrl) {
                 crossfade(true)
                 transformations(coil.transform.CircleCropTransformation())
-                placeholder(R.drawable.ic_nav_profile)
-                error(R.drawable.ic_nav_profile)
+                placeholder(R.drawable.avatar_vacio)
+                error(R.drawable.avatar_vacio)
             }
         } else {
-            imgAvatar.setImageResource(R.drawable.ic_nav_profile)
+            imgAvatar.setImageResource(R.drawable.avatar_vacio)
         }
 
-        txtSessionStatus.text = "Sesión activa con token JWT institucional"
+        pintarEstadoSesion()
+    }
+
+    /** Solo "Activa" o "Fuera de línea" (sin internet). */
+    private fun pintarEstadoSesion() {
+        if (!::txtSessionStatus.isInitialized || !isAdded) return
+        val cm = requireContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val red = cm.getNetworkCapabilities(cm.activeNetwork)
+        val enLinea = red?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        txtSessionStatus.text = if (enLinea) "Activa" else "Fuera de línea"
+        txtSessionStatus.setTextColor(androidx.core.content.ContextCompat.getColor(requireContext(),
+            if (enLinea) R.color.badge_success_text else R.color.text_secondary))
+    }
+
+    /** Se actualiza solo si se conecta o desconecta mientras se ve el Perfil. */
+    private val escuchaRed = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) { view?.post { pintarEstadoSesion() } }
+        override fun onLost(network: android.net.Network) { view?.post { pintarEstadoSesion() } }
+    }
+
+    /** Vuelve a traer la foto oficial de MiUV; si la sesión de MiUV caducó, ofrece entrar otra vez. */
+    private fun recargarFoto(boton: MaterialButton) {
+        boton.isEnabled = false
+        val textoOriginal = boton.text
+        boton.text = "Cargando tu foto de MiUV…"
+        com.pako.eminus4.data.MiuvFoto.recargar(requireContext()) { r ->
+            if (!isAdded) return@recargar
+            boton.isEnabled = true
+            boton.text = textoOriginal
+            when (r) {
+                com.pako.eminus4.data.MiuvFoto.Resultado.OK -> {
+                    Toast.makeText(requireContext(), "Foto actualizada", Toast.LENGTH_SHORT).show()
+                    recargarPerfil()
+                }
+                com.pako.eminus4.data.MiuvFoto.Resultado.SIN_FOTO ->
+                    Toast.makeText(requireContext(), "MiUV no tiene una foto registrada para tu credencial", Toast.LENGTH_LONG).show()
+                else -> AlertDialog.Builder(requireContext())
+                    .setTitle("Entrar otra vez a MiUV")
+                    .setMessage("Para traer tu foto hay que iniciar sesión de nuevo en MiUV (con tu mismo usuario y contraseña). Solo tarda unos segundos.")
+                    .setPositiveButton("Iniciar sesión") { _, _ ->
+                        startActivity(android.content.Intent(requireContext(), com.pako.eminus4.ui.auth.LoginWebViewActivity::class.java).apply {
+                            putExtra("RENEWAL_ONLY", true)
+                            putExtra("FORZAR_MIUV", true)
+                        })
+                    }
+                    .setNegativeButton("Ahora no", null)
+                    .show()
+            }
+        }
     }
 
     private fun mostrarDialogoCerrarSesion() {
         AlertDialog.Builder(requireContext())
             .setTitle("Cerrar Sesión")
-            .setMessage("¿Estás seguro de que deseas cerrar tu sesión de Eminus?")
+            .setMessage("Se borrará de la app todo lo de tu cuenta: tu credencial y foto, tu horario, recordatorios y las copias de archivos que abriste o subiste desde la app.\n\nLo que guardaste en Descargas no se toca. Para volver a usar la app tendrás que iniciar sesión de nuevo.")
             .setPositiveButton("Cerrar sesión") { _, _ ->
                 (activity as? MainActivity)?.cerrarSesionDirecta()
             }
@@ -362,7 +424,8 @@ class ProfileFragment : Fragment() {
                     region = nuevaRegion,
                     monthsValidity = months,
                     yearValidity = year,
-                    qrCode = "https://dsia.uv.mx/credencial/validar?u=$nuevaMatricula",
+                    // Editar a mano no debe borrar el QR oficial de MiUV
+                    qrCode = cred.qrCode,
                     barCode = nuevaMatricula
                 )
                 sessionManager.saveStudentCredential(updated)

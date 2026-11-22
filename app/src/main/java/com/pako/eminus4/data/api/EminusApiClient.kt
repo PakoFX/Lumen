@@ -1,5 +1,7 @@
 package com.pako.eminus4.data.api
 
+import com.pako.eminus4.data.model.*
+
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -11,6 +13,8 @@ import com.pako.eminus4.data.model.Activity
 import com.pako.eminus4.data.model.Course
 import com.pako.eminus4.data.model.CourseResponse
 import com.pako.eminus4.data.model.ExamItem
+import com.pako.eminus4.data.model.ForumComment
+import com.pako.eminus4.data.model.ForumDetail
 import com.pako.eminus4.data.model.ForumItem
 import com.pako.eminus4.data.model.MessageDetail
 import com.pako.eminus4.data.model.MessageItem
@@ -543,6 +547,11 @@ class EminusApiClient(private val sessionManager: SessionManager) {
 
                     val type = object : TypeToken<List<ForumItem>>() {}.type
                     val forums: List<ForumItem> = gson.fromJson(bodyString, type) ?: emptyList()
+                    // Solo NOMBRES de campos (para validar el mapeo de fechas), nunca valores
+                    try {
+                        com.google.gson.JsonParser.parseString(bodyString).asJsonArray.firstOrNull()?.asJsonObject
+                            ?.let { Log.d("EMINUS_API", "Campos de foro: ${it.keySet()}") }
+                    } catch (_: Exception) { }
                     postResult(onResult, Result.success(forums))
                 } catch (e: Exception) {
                     Log.e("EMINUS_API", "Error parseando foros", e)
@@ -749,6 +758,355 @@ class EminusApiClient(private val sessionManager: SessionManager) {
                 when {
                     code == 401 -> postResult(onResult, Result.failure(Exception("Sesión expirada (401)")))
                     !response.isSuccessful -> postResult(onResult, Result.failure(Exception("Error al quitar archivo ($code)")))
+                    else -> postResult(onResult, Result.success(Unit))
+                }
+            }
+        })
+    }
+
+    // ===================== ADJUNTOS (mensajes y comentarios de foro) =====================
+
+    /** Sube varios archivos en una sola petición multipart (campo `file`, como Eminus web). */
+    private fun subirArchivos(url: String, archivos: List<com.pako.eminus4.util.Adjuntos.Listo>, etiqueta: String, onResult: (Result<Unit>) -> Unit) {
+        if (archivos.isEmpty()) { onResult(Result.success(Unit)); return }
+        val cuerpo = MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+            archivos.forEach { a -> addFormDataPart("file", a.nombre, a.archivo.asRequestBody(a.mime.toMediaTypeOrNull())) }
+        }.build()
+        uploadClient.newCall(Request.Builder().url(url).post(cuerpo).build()).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("EMINUS_API", "Error de red en $etiqueta", e)
+                postResult(onResult, Result.failure(e))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val code = response.code
+                val body = try { response.body?.string() ?: "" } catch (_: Exception) { "" }
+                Log.d("EMINUS_API", "$etiqueta HTTP $code (${archivos.size} archivo/s, ${body.length} bytes)")
+                when {
+                    code == 401 -> postResult(onResult, Result.failure(Exception("Sesión expirada (401)")))
+                    code == 413 -> postResult(onResult, Result.failure(Exception("Un archivo es demasiado grande para Eminus")))
+                    !response.isSuccessful -> postResult(onResult, Result.failure(Exception("Error al subir archivos ($code)")))
+                    else -> postResult(onResult, Result.success(Unit))
+                }
+            }
+        })
+    }
+
+    /** POST Foro/adjuntarComentarioForo?idCurso&idForo&idComentario (el comentario ya debe existir). */
+    fun uploadForumCommentFiles(
+        idCurso: Long, idForo: Long, idComentario: Long,
+        archivos: List<com.pako.eminus4.util.Adjuntos.Listo>, onResult: (Result<Unit>) -> Unit
+    ) = subirArchivos(
+        "${Constants.API_GLOBAL_URL}Foro/adjuntarComentarioForo?idCurso=$idCurso&idForo=$idForo&idComentario=$idComentario",
+        archivos, "adjuntarComentarioForo", onResult
+    )
+
+    /** POST centromensajes/adjuntarCentroMensajes/{idMensaje} (sobre el borrador, antes de enviarlo). */
+    private fun uploadMessageFiles(idMensaje: Long, archivos: List<com.pako.eminus4.util.Adjuntos.Listo>, onResult: (Result<Unit>) -> Unit) =
+        subirArchivos("${Constants.API_GLOBAL_URL}centromensajes/adjuntarCentroMensajes/$idMensaje", archivos, "adjuntarCentroMensajes", onResult)
+
+    // ===================== MENSAJES: REDACTAR Y RESPONDER =====================
+    // Mismo flujo que Eminus web (servicio centromensajes, API global).
+
+    /**
+     * Destinatarios posibles de un curso (profesor y compañeros).
+     * GET centromensajes/getDestinatariosPorCurso/{idCurso} → { destinatarios: [ {idUsuario, nombre, correo, …} ] }.
+     * Se devuelven los objetos tal cual: al enviar, Eminus espera esos mismos objetos.
+     */
+    fun getMessageRecipients(idCurso: Long, onResult: (Result<List<com.google.gson.JsonObject>>) -> Unit) {
+        val req = Request.Builder().url("${Constants.API_GLOBAL_URL}centromensajes/getDestinatariosPorCurso/$idCurso").get().build()
+        llamarJson(req, "getDestinatariosPorCurso") { r ->
+            onResult(r.mapCatching { body ->
+                if (body.isBlank()) return@mapCatching emptyList()
+                val raiz = com.google.gson.JsonParser.parseString(body)
+                val arr = when {
+                    raiz.isJsonArray -> raiz.asJsonArray
+                    raiz.isJsonObject && raiz.asJsonObject.has("destinatarios") -> raiz.asJsonObject.getAsJsonArray("destinatarios")
+                    else -> com.google.gson.JsonArray()
+                }
+                val lista = arr.filter { it.isJsonObject }.map { it.asJsonObject }
+                // Solo NOMBRES de campos al log, nunca valores
+                lista.firstOrNull()?.let { Log.d("EMINUS_API", "Campos de destinatario: ${it.keySet()}") }
+                lista
+            })
+        }
+    }
+
+    private fun cuerpoMensaje(
+        idMensaje: Long, asunto: String?, html: String?,
+        destinatarios: List<com.google.gson.JsonObject>?, carpeta: Int, idPadre: Long
+    ) = com.google.gson.JsonObject().apply {
+        if (asunto == null) add("asunto", com.google.gson.JsonNull.INSTANCE) else addProperty("asunto", asunto)
+        if (destinatarios == null) add("destinatarios", com.google.gson.JsonNull.INSTANCE)
+        else add("destinatarios", com.google.gson.JsonArray().apply { destinatarios.forEach { add(it) } })
+        add("destinatarioscc", if (destinatarios == null) com.google.gson.JsonNull.INSTANCE else com.google.gson.JsonArray())
+        addProperty("idMensaje", idMensaje)
+        if (html == null) add("mensaje", com.google.gson.JsonNull.INSTANCE) else addProperty("mensaje", html)
+        addProperty("idMensajeCarpeta", carpeta)
+        addProperty("idMensajePadre", idPadre)
+    }.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+
+    /**
+     * Envía un mensaje como Eminus web (centromensajes/insertaActualizaMensaje en 2 pasos):
+     *  1. Crea un borrador vacío → Eminus devuelve su idMensaje.
+     *  2. Lo actualiza con asunto, mensaje (HTML) y destinatarios, con idMensajeCarpeta = 1 (enviado).
+     * Si el paso 2 falla, se borra el borrador para no dejar basura en "Borradores".
+     * @param idPadre 0 = mensaje nuevo; id del mensaje original = respuesta.
+     */
+    fun sendMessage(
+        asunto: String, html: String, destinatarios: List<com.google.gson.JsonObject>,
+        idPadre: Long, adjuntos: List<com.pako.eminus4.util.Adjuntos.Listo> = emptyList(),
+        onResult: (Result<Unit>) -> Unit
+    ) {
+        val url = "${Constants.API_GLOBAL_URL}centromensajes/insertaActualizaMensaje"
+        val crear = Request.Builder().url(url).post(cuerpoMensaje(0, null, null, null, 0, idPadre)).build()
+        llamarJson(crear, "insertaActualizaMensaje (borrador)") { r1 ->
+            val idMensaje = r1.getOrNull()?.trim()?.trim('"')?.toLongOrNull()
+            if (idMensaje == null || idMensaje <= 0) {
+                onResult(Result.failure(r1.exceptionOrNull() ?: Exception("Eminus no creó el mensaje")))
+                return@llamarJson
+            }
+            fun borrarBorrador() {
+                val borrar = JSONObject().apply { put("idMensaje", idMensaje) }.toString()
+                    .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+                llamarJson(Request.Builder().url("${Constants.API_GLOBAL_URL}centromensajes/EliminaMensajeBorrador").put(borrar).build(),
+                    "EliminaMensajeBorrador") { }
+            }
+            // Adjuntos sobre el borrador (como Eminus web); si fallan, no se envía nada
+            uploadMessageFiles(idMensaje, adjuntos) { rAdj ->
+                if (rAdj.isFailure) {
+                    borrarBorrador()
+                    onResult(Result.failure(rAdj.exceptionOrNull() ?: Exception("No se pudieron adjuntar los archivos")))
+                    return@uploadMessageFiles
+                }
+                val enviar = Request.Builder().url(url)
+                    .post(cuerpoMensaje(idMensaje, asunto, html, destinatarios, 1, idPadre)).build()
+                llamarJson(enviar, "insertaActualizaMensaje (enviar)") { r2 ->
+                    if (r2.isSuccess) {
+                        onResult(Result.success(Unit))
+                    } else {
+                        borrarBorrador()
+                        onResult(Result.failure(r2.exceptionOrNull() ?: Exception("No se pudo enviar")))
+                    }
+                }
+            }
+        }
+    }
+
+    // ===================== FOROS: LEER Y PARTICIPAR =====================
+    // Mismos endpoints que Eminus web (servicio de comentarios de foro, API global).
+
+    /** GET/PUT/POST genérico que devuelve el cuerpo (o error con el código HTTP). */
+    // ===================== DENTRO DE UNA MATERIA: CONTENIDO, MIEMBROS, SEGUIMIENTO =====================
+
+    private inline fun <reified T> lista(body: String): List<T> =
+        if (body.isBlank()) emptyList()
+        else gson.fromJson<List<T>>(body, object : TypeToken<List<T>>() {}.type) ?: emptyList()
+
+    private fun getJson(ruta: String, etiqueta: String, onResult: (Result<String>) -> Unit) =
+        llamarJson(Request.Builder().url(Constants.API_GLOBAL_URL + ruta).get().build(), etiqueta, onResult)
+
+    /** GET Contenido/getUnidades/{idCurso}/0 */
+    fun getContentUnits(idCurso: Long, onResult: (Result<List<ContentUnit>>) -> Unit) =
+        getJson("Contenido/getUnidades/$idCurso/0", "getUnidades") { r ->
+            onResult(r.mapCatching { lista<ContentUnit>(it).filter { u -> u.visible == 1 }.sortedBy { u -> u.posicion } })
+        }
+
+    /** GET Contenido/getElementos/{idCurso}/{idUnidad} */
+    fun getContentElements(idCurso: Long, idUnidad: Long, onResult: (Result<List<ContentElement>>) -> Unit) =
+        getJson("Contenido/getElementos/$idCurso/$idUnidad", "getElementos") { r ->
+            onResult(r.mapCatching { lista<ContentElement>(it).filter { e -> e.visible == 1 }.sortedBy { e -> e.posicion } })
+        }
+
+    /** PUT Contenido/insertaLeido {idElemento, idcurso} (botón "Leído" de Eminus web). */
+    fun markElementRead(idCurso: Long, idElemento: Long, onResult: (Result<Unit>) -> Unit) {
+        val cuerpo = JSONObject().apply { put("idElemento", idElemento); put("idcurso", idCurso) }.toString()
+            .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        llamarJson(Request.Builder().url("${Constants.API_GLOBAL_URL}Contenido/insertaLeido").put(cuerpo).build(), "insertaLeido") { r ->
+            onResult(r.map { })
+        }
+    }
+
+    /** PUT Contenido/insertaLike {idElemento, idcurso} (alterna). */
+    fun likeElement(idCurso: Long, idElemento: Long, onResult: (Result<Unit>) -> Unit) {
+        val cuerpo = JSONObject().apply { put("idElemento", idElemento); put("idcurso", idCurso) }.toString()
+            .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        llamarJson(Request.Builder().url("${Constants.API_GLOBAL_URL}Contenido/insertaLike").put(cuerpo).build(), "insertaLike") { r ->
+            onResult(r.map { })
+        }
+    }
+
+    /**
+     * POST Contenido/InsertaComentariosElemento {Texto, IdElemento, IdCurso} — comentario en un elemento
+     * del Contenido. Mismo cuerpo que arma Eminus web (`prepareComment` → `elementService.insertComment`).
+     * Texto plano: se escapa y los saltos de línea van como <br>.
+     */
+    fun commentElement(idCurso: Long, idElemento: Long, texto: String, onResult: (Result<Unit>) -> Unit) {
+        val html = android.text.TextUtils.htmlEncode(texto.trim()).replace("\n", "<br>")
+        val cuerpo = JSONObject().apply { put("Texto", html); put("IdElemento", idElemento); put("IdCurso", idCurso) }.toString()
+            .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        llamarJson(Request.Builder().url("${Constants.API_GLOBAL_URL}Contenido/InsertaComentariosElemento").post(cuerpo).build(),
+            "InsertaComentariosElemento") { r -> onResult(r.map { }) }
+    }
+
+    /** Vuelve a pedir un elemento (para ver comentarios nuevos): se busca en getElementos de su unidad. */
+    fun getContentElement(idCurso: Long, idUnidad: Long, idElemento: Long, onResult: (Result<ContentElement?>) -> Unit) =
+        getContentElements(idCurso, idUnidad) { r -> onResult(r.map { l -> l.firstOrNull { it.idElemento == idElemento } }) }
+
+    /** GET Usuario/getIntegrantes/{idCurso} */
+    fun getCourseMembers(idCurso: Long, onResult: (Result<List<CourseMember>>) -> Unit) =
+        getJson("Usuario/getIntegrantes/$idCurso", "getIntegrantes") { r -> onResult(r.mapCatching { lista<CourseMember>(it) }) }
+
+    /** GET Seguimiento/SegDetalle/{idCurso}/{idUsuario} (Eminus devuelve una lista; se juntan las del usuario). */
+    fun getTracking(idCurso: Long, idUsuario: String, onResult: (Result<TrackingDetail?>) -> Unit) =
+        getJson("Seguimiento/SegDetalle/$idCurso/$idUsuario", "SegDetalle") { r ->
+            onResult(r.mapCatching { body ->
+                val todos = lista<TrackingDetail>(body)
+                val mios = todos.filter { it.idUsuario.equals(idUsuario, ignoreCase = true) }.ifEmpty { todos }
+                val base = mios.firstOrNull() ?: return@mapCatching null
+                fun junta(f: (TrackingGroups) -> List<TrackingItem>?) =
+                    mios.flatMap { m -> m.detalle?.let(f).orEmpty() }.distinctBy { it.id to it.titulo }
+                base.copy(detalle = TrackingGroups(
+                    actividades = junta { it.actividades }, foros = junta { it.foros }, examenes = junta { it.examenes }))
+            })
+        }
+
+    /** GET Seguimiento/SegUltimoAccesoCurso/{idCurso}/{idUsuario} → {ultimoAcceso} */
+    fun getLastAccess(idCurso: Long, idUsuario: String, onResult: (Result<String?>) -> Unit) =
+        getJson("Seguimiento/SegUltimoAccesoCurso/$idCurso/$idUsuario", "SegUltimoAccesoCurso") { r ->
+            onResult(r.mapCatching { body ->
+                if (body.isBlank()) null
+                else com.google.gson.JsonParser.parseString(body).asJsonObject.get("ultimoAcceso")?.takeIf { !it.isJsonNull }?.asString
+            })
+        }
+
+    private fun llamarJson(request: Request, etiqueta: String, onResult: (Result<String>) -> Unit) {
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("EMINUS_API", "Error de red en $etiqueta", e)
+                postResult(onResult, Result.failure(e))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val code = response.code
+                val body = try { response.body?.string() ?: "" } catch (_: Exception) { "" }
+                Log.d("EMINUS_API", "$etiqueta HTTP $code (${body.length} bytes)")
+                when {
+                    code == 401 -> postResult(onResult, Result.failure(Exception("Sesión expirada (401)")))
+                    code == 204 -> postResult(onResult, Result.success(""))
+                    !response.isSuccessful -> postResult(onResult, Result.failure(Exception("Error de Eminus ($code)")))
+                    else -> postResult(onResult, Result.success(body))
+                }
+            }
+        })
+    }
+
+    private fun parsearComentarios(body: String): List<ForumComment> {
+        if (body.isBlank() || body.trim() == "[]") return emptyList()
+        val lista: List<ForumComment> = gson.fromJson(body, object : TypeToken<List<ForumComment>>() {}.type) ?: emptyList()
+        // Solo NOMBRES de campos al log (para validar el mapeo), nunca valores
+        try {
+            val primero = com.google.gson.JsonParser.parseString(body).asJsonArray.firstOrNull()?.asJsonObject
+            if (primero != null) Log.d("EMINUS_API", "Campos de comentario de foro: ${primero.keySet()}")
+        } catch (_: Exception) { }
+        return lista
+    }
+
+    fun getForumDetail(idCurso: Long, idForo: Long, onResult: (Result<ForumDetail>) -> Unit) {
+        val req = Request.Builder().url("${Constants.API_GLOBAL_URL}Foro/getForo/$idCurso/$idForo").get().build()
+        llamarJson(req, "getForo") { r ->
+            onResult(r.mapCatching { gson.fromJson(it, ForumDetail::class.java) ?: ForumDetail() })
+        }
+    }
+
+    /** Primera página de comentarios raíz (con algunas respuestas cada uno). */
+    fun getForumComments(idCurso: Long, idForo: Long, onResult: (Result<List<ForumComment>>) -> Unit) {
+        val req = Request.Builder().url("${Constants.API_GLOBAL_URL}Foro/getComentariosForo/$idCurso/$idForo").get().build()
+        llamarJson(req, "getComentariosForo") { r -> onResult(r.mapCatching { parsearComentarios(it) }) }
+    }
+
+    /** Resto de comentarios raíz (Eminus web: botón "ver más comentarios"). */
+    fun getMoreForumComments(idCurso: Long, idForo: Long, onResult: (Result<List<ForumComment>>) -> Unit) {
+        val req = Request.Builder().url("${Constants.API_GLOBAL_URL}Foro/getMasComentarios/$idCurso/$idForo").get().build()
+        llamarJson(req, "getMasComentarios") { r -> onResult(r.mapCatching { parsearComentarios(it) }) }
+    }
+
+    /** Todas las respuestas de un comentario (Eminus web: "ver más respuestas"). */
+    fun getMoreForumAnswers(idCurso: Long, idForo: Long, idComentario: Long, onResult: (Result<List<ForumComment>>) -> Unit) {
+        val req = Request.Builder().url("${Constants.API_GLOBAL_URL}Foro/getMasRespuestas/$idCurso/$idForo/$idComentario").get().build()
+        llamarJson(req, "getMasRespuestas") { r -> onResult(r.mapCatching { parsearComentarios(it) }) }
+    }
+
+    /**
+     * Publica un comentario (idPadre = 0) o una respuesta (idPadre = comentario al que responde).
+     * Igual que Eminus web: POST Foro/InsertaComentarioForo
+     * { IdComentarioForo: 0, Descripcion: <html>, IdPadre, IdCurso, IdForo }.
+     */
+    fun postForumComment(idCurso: Long, idForo: Long, html: String, idPadre: Long, onResult: (Result<Long?>) -> Unit) {
+        val body = JSONObject().apply {
+            put("IdComentarioForo", 0)
+            put("Descripcion", html)
+            put("IdPadre", idPadre)
+            put("IdCurso", idCurso)
+            put("IdForo", idForo)
+        }.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        val req = Request.Builder().url("${Constants.API_GLOBAL_URL}Foro/InsertaComentarioForo").post(body).build()
+        // Eminus responde con el/los comentario(s) guardados: el id más alto es el nuevo
+        llamarJson(req, "InsertaComentarioForo") { r ->
+            onResult(r.map { body ->
+                try {
+                    val raiz = com.google.gson.JsonParser.parseString(body)
+                    val lista = when {
+                        raiz.isJsonArray -> raiz.asJsonArray.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+                        raiz.isJsonObject -> listOf(raiz.asJsonObject)
+                        else -> emptyList()
+                    }
+                    lista.mapNotNull { it.get("idComentarioForo")?.takeIf { v -> v.isJsonPrimitive }?.asLong }.maxOrNull()
+                } catch (_: Exception) { null }
+            })
+        }
+    }
+
+    /** Da o quita "me gusta" (Eminus lo alterna). PUT Foro/insertaComentarioLike { IdComentarioForo, IdCurso }. */
+    fun likeForumComment(idCurso: Long, idComentario: Long, onResult: (Result<Unit>) -> Unit) {
+        val body = JSONObject().apply {
+            put("IdComentarioForo", idComentario)
+            put("IdCurso", idCurso)
+        }.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+        val req = Request.Builder().url("${Constants.API_GLOBAL_URL}Foro/insertaComentarioLike").put(body).build()
+        llamarJson(req, "insertaComentarioLike") { r -> onResult(r.map { }) }
+    }
+
+    /**
+     * Archiva (o desarchiva) un curso en la lista del alumno.
+     * Igual que Eminus web: PUT Cursos/ActualizaArchivado { idCurso, archivado: 1|0 }.
+     * Solo cambia en qué apartado aparece el curso; no afecta actividades ni calificaciones.
+     */
+    fun setCourseArchived(idCurso: Long, archivar: Boolean, onResult: (Result<Unit>) -> Unit) {
+        val body = JSONObject().apply {
+            put("idCurso", idCurso)
+            put("archivado", if (archivar) 1 else 0)
+        }.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+
+        val request = Request.Builder()
+            .url("${Constants.API_GLOBAL_URL}Cursos/ActualizaArchivado")
+            .put(body)
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("EMINUS_API", "Error de red al archivar curso", e)
+                postResult(onResult, Result.failure(e))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val code = response.code
+                val bodyString = try { response.body?.string() ?: "" } catch (_: Exception) { "" }
+                Log.d("EMINUS_API", "ActualizaArchivado HTTP $code: ${bodyString.take(200)}")
+
+                when {
+                    code == 401 -> postResult(onResult, Result.failure(Exception("Sesión expirada (401)")))
+                    !response.isSuccessful -> postResult(onResult, Result.failure(Exception("Error al archivar ($code)")))
                     else -> postResult(onResult, Result.success(Unit))
                 }
             }

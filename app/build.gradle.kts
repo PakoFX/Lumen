@@ -10,8 +10,8 @@ android {
         applicationId = "com.pako.eminus4"
         minSdk = 24
         targetSdk = 35
-        versionCode = 16
-        versionName = "2.8.1"
+        versionCode = 21
+        versionName = "2.12.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -64,6 +64,11 @@ dependencies {
 
     // Generación offline de códigos QR y códigos de barras (Credencial)
     implementation("com.google.zxing:core:3.5.3")
+    // Leer el PDF del horario de MiUV (trae la hora de término de cada clase)
+    // Sin BouncyCastle (~11 MB): solo sirve para PDF cifrados y el de MiUV no lo está
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0") {
+        exclude(group = "org.bouncycastle")
+    }
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)

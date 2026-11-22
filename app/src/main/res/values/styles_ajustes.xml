@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Estilos de las pantallas de ajustes (Perfil → Notificaciones) -->
+<resources>
+    <style name="TarjetaAjustes" parent="Widget.Material3.CardView.Outlined">
+        <item name="cardBackgroundColor">@color/bg_card</item>
+        <item name="cardCornerRadius">14dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="strokeColor">@color/border_card</item>
+        <item name="strokeWidth">1dp</item>
+    </style>
+
+    <style name="TituloSeccionAjustes">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">20dp</item>
+        <item name="android:layout_marginBottom">6dp</item>
+        <item name="android:layout_marginStart">4dp</item>
+        <item name="android:textColor">@color/text_tertiary</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="SwitchAjustes">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <!-- Chip de filtro compacto (ahorra altura en las filas de filtros) -->
+    <style name="Lumen.Chip.Filtro" parent="Widget.Material3.Chip.Filter">
+        <item name="chipMinHeight">32dp</item>
+        <item name="ensureMinTouchTargetSize">false</item>
+        <item name="android:textSize">13sp</item>
+        <item name="chipStartPadding">6dp</item>
+        <item name="chipEndPadding">6dp</item>
+    </style>
+
+    <!-- Paso de la pantalla "Preparando tu cuenta" (el ícono se pone por código) -->
+    <style name="Lumen.PasoSync" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:paddingVertical">7dp</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">@color/text_tertiary</item>
+        <item name="android:gravity">center_vertical</item>
+    </style>
+</resources>

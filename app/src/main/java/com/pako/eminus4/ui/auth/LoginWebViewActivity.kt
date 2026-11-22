@@ -4,6 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
+import com.pako.eminus4.util.iconoInicio
+import androidx.core.content.ContextCompat
+import android.widget.TextView
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -88,7 +91,11 @@ class LoginWebViewActivity : AppCompatActivity() {
 
         configurarWebView()
 
-        if (isSessionExpired || isLogout) {
+        // "Volver a cargar foto/horario" con la sesión de MiUV caducada: MiUV necesita usuario y contraseña,
+        // pero si Eminus aún recuerda la sesión se entra sin escribirlos y MiUV se omitía. Se limpia la
+        // sesión web (no los datos de la app) para que se pidan y se capturen.
+        val forzarMiuv = intent.getBooleanExtra("FORZAR_MIUV", false)
+        if (isSessionExpired || isLogout || forzarMiuv) {
             if (!isRenewalOnly) {
                 sessionManager.clearSession(preserveCredential = true)
             }
@@ -571,7 +578,12 @@ class LoginWebViewActivity : AppCompatActivity() {
             val clave = credClave
             credUsuario = null
             credClave = null   // la propiedad de la clave pasa a MiuvSync, que la borra al terminar
-            if (usuario != null && clave != null) {
+            if (usuario != null && clave != null && renovacionConDatosRecientes(usuario)) {
+                // Renovar la sesión no repite la carga de MiUV si ya hay datos recientes de esta cuenta
+                clave.fill('\u0000')
+                Log.i("EMINUS_LOGIN", "Renovación: datos de MiUV recientes, se omite la sincronización")
+                entrarALaApp()
+            } else if (usuario != null && clave != null) {
                 sincronizarConMiuv(usuario, clave, userName)
             } else {
                 Log.i("EMINUS_LOGIN", "Sin usuario/contraseña capturados (sesión recordada): se omite MiUV")
@@ -584,16 +596,46 @@ class LoginWebViewActivity : AppCompatActivity() {
         }
     }
 
+    /** Renovación de la MISMA cuenta con credencial y horario de MiUV de hace menos de 7 días. */
+    private fun renovacionConDatosRecientes(usuario: String): Boolean {
+        if (!intent.getBooleanExtra("RENEWAL_ONLY", false)) return false
+        if (intent.getBooleanExtra("FORZAR_MIUV", false)) return false   // "Volver a cargar mi foto"
+        val cred = sessionManager.getStudentCredential() ?: return false
+        val mismaCuenta = cred.getMatriculaOficial() == sessionManager.normalizarMatricula(usuario)
+        val reciente = System.currentTimeMillis() - (cred.actualizadoMiuv ?: 0L) < 7L * 24 * 60 * 60 * 1000
+        return mismaCuenta && reciente && sessionManager.getHorario() != null
+    }
+
+    /** Pantalla "Preparando tu cuenta": paso actual con reloj, anteriores con palomita. */
+    private fun pintarPasos(actual: Int) {
+        listOf(R.id.pasoSync0, R.id.pasoSync1, R.id.pasoSync2, R.id.pasoSync3).forEachIndexed { i, id ->
+            val t = findViewById<TextView>(id) ?: return@forEachIndexed
+            val (icono, color) = when {
+                i < actual -> R.drawable.ic_check_circle to R.color.badge_success_text
+                i == actual -> R.drawable.ic_hourglass_top to R.color.brand_uv_green
+                else -> R.drawable.ic_schedule to R.color.text_tertiary
+            }
+            t.setTextColor(ContextCompat.getColor(this, if (i <= actual) R.color.text_primary else R.color.text_tertiary))
+            t.setTypeface(null, if (i == actual) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+            t.iconoInicio(icono, ContextCompat.getColor(this, color), tamanoDp = 20, separacionDp = 12)
+        }
+    }
+
     /** Entra una vez a MiUV con los mismos datos, lee el programa educativo y sigue. */
     private fun sincronizarConMiuv(usuario: String, clave: CharArray, userName: String?) {
         // El usuario del login es la matrícula: sirve de respaldo si Eminus aún no reportó userId
         val matriculaLogin = usuario
         sessionManager.descartarCredencialAjena(matriculaLogin)
         findViewById<View>(R.id.layoutSyncMiuv).visibility = View.VISIBLE
-        MiuvSync(webView, java.io.File(filesDir, "credencial"), usuario, clave).iniciar { datos ->
+        pintarPasos(0)
+        val sync = MiuvSync(webView, java.io.File(filesDir, "credencial"), usuario, clave)
+        sync.alAvanzar = { paso -> if (!isFinishing) pintarPasos(paso) }
+        sync.iniciar { datos ->
             if (isFinishing || isDestroyed) return@iniciar
             if (datos != null) {
                 sessionManager.aplicarDatosMiuv(datos, userName, matriculaLogin)
+                // La hora de término de cada clase viene en el PDF de "Imprimir" de MiUV (en segundo plano)
+                if (!datos.horario.isNullOrEmpty()) com.pako.eminus4.data.HorarioPdf.completarEnSegundoPlano(this)
                 Toast.makeText(this, "Credencial actualizada: ${datos.programa}", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "No se pudo leer MiUV; puedes editar tu programa en Perfil.", Toast.LENGTH_LONG).show()

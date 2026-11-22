@@ -17,12 +17,13 @@ import com.pako.eminus4.data.model.Course
 import com.pako.eminus4.util.iconoInicio
 
 class CourseAdapter(
+    private val onCourseLongClick: (Course) -> Unit = {},
     private val onCourseClick: (Course) -> Unit
 ) : ListAdapter<Course, CourseAdapter.CourseViewHolder>(CourseDiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): CourseViewHolder {
         val view = LayoutInflater.from(parent.context).inflate(R.layout.item_course_card, parent, false)
-        return CourseViewHolder(view, onCourseClick)
+        return CourseViewHolder(view, onCourseClick, onCourseLongClick)
     }
 
     override fun onBindViewHolder(holder: CourseViewHolder, position: Int) {
@@ -31,7 +32,8 @@ class CourseAdapter(
 
     class CourseViewHolder(
         itemView: View,
-        private val onCourseClick: (Course) -> Unit
+        private val onCourseClick: (Course) -> Unit,
+        private val onCourseLongClick: (Course) -> Unit
     ) : RecyclerView.ViewHolder(itemView) {
 
         private val cardHeaderBanner: FrameLayout = itemView.findViewById(R.id.cardHeaderBanner)
@@ -48,9 +50,13 @@ class CourseAdapter(
             txtTitle.text = course.getNombreLimpio()
             txtDependence.text = course.dependencia ?: "Universidad Veracruzana"
 
-            // Fix 2: chip con estado real Activo / Cerrado
-            val activo = course.isActivo()
-            txtCourseType.text = if (activo) "ACTIVO" else "CERRADO"
+            // Chip con estado real: Archivado / Activo / Cerrado
+            val activo = course.isActivo() && !course.esArchivado()
+            txtCourseType.text = when {
+                course.esArchivado() -> "ARCHIVADO"
+                activo -> "ACTIVO"
+                else -> "CERRADO"
+            }
             txtCourseType.setBackgroundResource(
                 if (activo) R.drawable.bg_pill_active else R.drawable.bg_pill_closed
             )
@@ -90,6 +96,11 @@ class CourseAdapter(
 
             itemView.setOnClickListener {
                 onCourseClick(course)
+            }
+            // Mantener presionado: archivar / desarchivar (como el botón de Eminus web)
+            itemView.setOnLongClickListener {
+                onCourseLongClick(course)
+                true
             }
         }
     }

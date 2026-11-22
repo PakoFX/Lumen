@@ -2,8 +2,8 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0, user-scalable=yes">
-    <title>Visor de Presentación PowerPoint</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <title>Presentación</title>
     <script src="jszip.min.js"></script>
     <script src="chart.umd.min.js"></script>
     <script src="PptxViewJS.min.js"></script>
@@ -12,190 +12,218 @@
         html, body {
             margin: 0;
             padding: 0;
+            background: #0F172A;
+            font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif;
+        }
+        /* Todas las diapositivas en lista vertical, cada una a todo el ancho (como un PDF) */
+        #slides {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 6px 4px 64px 4px;
+        }
+        .slide {
+            position: relative;
+            width: 100%;
+            background: #FFFFFF;
+            border-radius: 6px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.45);
+        }
+        .slide img {
+            display: block;
             width: 100%;
             height: 100%;
-            background-color: #0F172A;
-            font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif;
-            overflow-x: hidden;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
         }
-        #loading {
-            color: #38BDF8;
-            font-size: 14px;
-            font-weight: 500;
-            text-align: center;
-            padding: 40px 24px;
-            flex: 1;
+        .slide .pendiente {
+            position: absolute;
+            inset: 0;
             display: flex;
             align-items: center;
             justify-content: center;
-        }
-        #error {
-            display: none;
-            color: #EF4444;
-            font-size: 14px;
-            text-align: center;
-            padding: 40px 24px;
-        }
-        #slide-wrapper {
-            width: 100%;
-            flex: 1;
-            display: none;
-            flex-direction: column;
-            justify-content: flex-start;
-            align-items: center;
-            padding: 12px 8px;
-        }
-        .canvas-container {
-            width: 100%;
-            max-width: 960px;
-            background: #FFFFFF;
-            border-radius: 12px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-            overflow: hidden;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-        #slideCanvas {
-            width: 100% !important;
-            height: auto !important;
-            display: block;
-        }
-        .nav-bar {
-            margin-top: 14px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 14px;
-            background: rgba(30, 41, 59, 0.95);
-            backdrop-filter: blur(8px);
-            padding: 8px 18px;
-            border-radius: 24px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.35);
-            border: 1px solid #334155;
-            margin-bottom: 16px;
-        }
-        .nav-btn {
-            background: #00897B;
-            color: #FFFFFF;
-            border: none;
-            padding: 8px 18px;
-            border-radius: 16px;
+            color: #94A3B8;
             font-size: 13px;
-            font-weight: bold;
-            cursor: pointer;
-            -webkit-tap-highlight-color: transparent;
+            background: #F1F5F9;
         }
-        .nav-btn:disabled {
-            opacity: 0.3;
-            cursor: not-allowed;
+        .slide .num {
+            position: absolute;
+            right: 6px;
+            bottom: 6px;
+            background: rgba(15, 23, 42, 0.65);
+            color: #F8FAFC;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 10px;
         }
-        .counter {
+        /* Contador flotante */
+        #contador {
+            position: fixed;
+            left: 50%;
+            bottom: 14px;
+            transform: translateX(-50%);
+            background: rgba(30, 41, 59, 0.92);
             color: #F8FAFC;
             font-size: 13px;
             font-weight: 600;
-            min-width: 80px;
-            text-align: center;
+            padding: 7px 16px;
+            border-radius: 18px;
+            border: 1px solid #334155;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+            display: none;
+            pointer-events: none;
         }
+        /* Horizontal: una diapositiva por pantalla, completa y centrada */
+        @media (orientation: landscape) {
+            html { scroll-snap-type: y mandatory; }
+            #slides { gap: 8px; padding: 4px 4px 4px 4px; align-items: center; }
+            .slide {
+                width: auto;
+                height: calc(100vh - 8px);
+                max-width: 100%;
+                scroll-snap-align: center;
+                border-radius: 4px;
+            }
+            #contador { bottom: 8px; padding: 4px 12px; font-size: 12px; opacity: 0.85; }
+        }
+        #loading, #error {
+            color: #38BDF8;
+            font-size: 14px;
+            text-align: center;
+            padding: 80px 24px;
+        }
+        #error { display: none; color: #EF4444; }
     </style>
 </head>
 <body>
-    <div id="loading">📙 Cargando presentación…</div>
+    <div id="loading">Cargando presentación…</div>
     <div id="error"></div>
-
-    <div id="slide-wrapper">
-        <div class="canvas-container">
-            <canvas id="slideCanvas"></canvas>
-        </div>
-        <div class="nav-bar">
-            <button id="btnPrev" class="nav-btn" onclick="prevSlide()" disabled>◀ Ant</button>
-            <span id="txtCounter" class="counter">1 / 1</span>
-            <button id="btnNext" class="nav-btn" onclick="nextSlide()">Sig ▶</button>
-        </div>
-    </div>
+    <div id="slides"></div>
+    <div id="contador"></div>
 
     <script>
-        var pptxViewer  = null;
-        var totalSlides = 1;
-        var currentSlide = 0;
+        var visor = null;
+        var total = 0;
+        var aspecto = 16 / 9;            // ancho / alto de la diapositiva
+        var lienzo = null;               // un solo canvas reutilizado para dibujar
+        var urls = [];                   // imágenes ya generadas (blob:)
+        var generacion = 0;              // si se vuelve a renderizar (p. ej. al girar), se cancela la anterior
 
-        // FileViewerActivity llama window.renderFile(url) después de que la página cargó.
+        function dimensiones() {
+            try {
+                var p = visor.processor;
+                var d = (p && typeof p.getSlideDimensions === "function") ? p.getSlideDimensions()
+                      : (p && p.presentation && p.presentation.slideSize);
+                if (d && d.cx > 0 && d.cy > 0) return d;
+            } catch (e) {}
+            return { cx: 9144000, cy: 5143500 };
+        }
+
+        // FileViewerActivity llama window.renderFile(url) cuando la página cargó.
         async function renderFile(fileUrl) {
             try {
                 var res = await fetch(fileUrl);
                 if (!res.ok) throw new Error("HTTP " + res.status);
                 var buffer = await res.arrayBuffer();
 
-                var canvas  = document.getElementById("slideCanvas");
-                var loading = document.getElementById("loading");
-                var wrapper = document.getElementById("slide-wrapper");
+                var Clase = (window.PptxViewJS && window.PptxViewJS.PPTXViewer) ? window.PptxViewJS.PPTXViewer : window.PPTXViewer;
+                if (!Clase) throw new Error("PptxViewJS no se inicializó.");
 
-                var ViewerClass = (window.PptxViewJS && window.PptxViewJS.PPTXViewer)
-                    ? window.PptxViewJS.PPTXViewer
-                    : window.PPTXViewer;
+                lienzo = document.createElement("canvas");
+                lienzo.width = 1600; lienzo.height = 900;
+                visor = new Clase({ canvas: lienzo, slideSizeMode: "fit", backgroundColor: "#FFFFFF", autoRenderFirstSlide: false });
+                await visor.loadFile(buffer);
 
-                if (!ViewerClass) throw new Error("PptxViewJS no se inicializó.");
+                total = visor.slideCount || visor.getSlideCount() || 1;
+                var d = dimensiones();
+                aspecto = d.cx / d.cy;
 
-                pptxViewer = new ViewerClass({
-                    canvas: canvas,
-                    slideSizeMode: "fit",
-                    backgroundColor: "#FFFFFF"
-                });
-
-                await pptxViewer.loadFile(buffer);
-
-                totalSlides  = pptxViewer.slideCount || 1;
-                currentSlide = 0;
-
-                loading.style.display    = "none";
-                wrapper.style.display    = "flex";
-
-                updateControls();
-                setupSwipe();
+                document.getElementById("loading").style.display = "none";
+                armarLista();
+                renderizarTodas();
             } catch (err) {
                 document.getElementById("loading").style.display = "none";
                 var el = document.getElementById("error");
-                el.style.display  = "block";
-                el.textContent    = "Error al renderizar presentación: " + err.message;
+                el.style.display = "block";
+                el.textContent = "No se pudo mostrar la presentación: " + err.message;
             }
         }
 
-        async function nextSlide() {
-            if (!pptxViewer || currentSlide >= totalSlides - 1) return;
-            currentSlide++;
-            await pptxViewer.renderSlide(currentSlide);
-            updateControls();
+        /** Marcos con la proporción exacta (la página no "brinca" mientras se dibujan). */
+        function armarLista() {
+            var cont = document.getElementById("slides");
+            cont.innerHTML = "";
+            for (var i = 0; i < total; i++) {
+                var s = document.createElement("div");
+                s.className = "slide";
+                s.id = "s" + i;
+                s.style.aspectRatio = aspecto;
+                s.innerHTML = '<div class="pendiente">Diapositiva ' + (i + 1) + '…</div><span class="num">' + (i + 1) + '</span>';
+                cont.appendChild(s);
+            }
+            observarContador();
         }
 
-        async function prevSlide() {
-            if (!pptxViewer || currentSlide <= 0) return;
-            currentSlide--;
-            await pptxViewer.renderSlide(currentSlide);
-            updateControls();
+        /** Tamaño del dibujo: ancho real de la pantalla × densidad × 1.5 (nítido aun con zoom). */
+        function tamanoLienzo() {
+            var dpr = window.devicePixelRatio || 1;
+            var ancho = Math.min(Math.round(document.documentElement.clientWidth * dpr * 1.5), 2600);
+            ancho = Math.max(ancho, 1200);
+            return { w: ancho, h: Math.round(ancho / aspecto) };
         }
 
-        function updateControls() {
-            document.getElementById("txtCounter").textContent =
-                (currentSlide + 1) + " / " + totalSlides;
-            document.getElementById("btnPrev").disabled = (currentSlide <= 0);
-            document.getElementById("btnNext").disabled = (currentSlide >= totalSlides - 1);
+        async function renderizarTodas() {
+            var gen = ++generacion;
+            var t = tamanoLienzo();
+            for (var i = 0; i < total; i++) {
+                if (gen !== generacion) return;
+                try {
+                    lienzo.width = t.w; lienzo.height = t.h;
+                    await visor.renderSlide(i, lienzo);
+                    var blob = await new Promise(function (ok) { lienzo.toBlob(ok, "image/jpeg", 0.9); });
+                    if (gen !== generacion || !blob) return;
+                    if (urls[i]) URL.revokeObjectURL(urls[i]);
+                    urls[i] = URL.createObjectURL(blob);
+                    var s = document.getElementById("s" + i);
+                    var img = s.querySelector("img") || document.createElement("img");
+                    img.alt = "Diapositiva " + (i + 1);
+                    img.src = urls[i];
+                    if (!img.parentNode) s.insertBefore(img, s.firstChild);
+                    var p = s.querySelector(".pendiente");
+                    if (p) p.remove();
+                } catch (e) {
+                    var s2 = document.getElementById("s" + i);
+                    var p2 = s2 && s2.querySelector(".pendiente");
+                    if (p2) p2.textContent = "No se pudo dibujar la diapositiva " + (i + 1);
+                }
+                // Dejar respirar a la interfaz entre diapositivas
+                await new Promise(function (ok) { setTimeout(ok, 0); });
+            }
         }
 
-        function setupSwipe() {
-            var startX = 0;
-            var wrapper = document.getElementById("slide-wrapper");
-            wrapper.addEventListener("touchstart", function(e) {
-                startX = e.changedTouches[0].screenX;
-            }, { passive: true });
-            wrapper.addEventListener("touchend", function(e) {
-                var dx = e.changedTouches[0].screenX - startX;
-                if (dx < -50) nextSlide();
-                else if (dx > 50) prevSlide();
-            }, { passive: true });
+        /** "3 / 24" según la diapositiva que más se ve. */
+        function observarContador() {
+            var c = document.getElementById("contador");
+            c.style.display = "block";
+            c.textContent = "1 / " + total;
+            var visibles = {};
+            var obs = new IntersectionObserver(function (entradas) {
+                entradas.forEach(function (e) { visibles[e.target.id] = e.intersectionRatio; });
+                var mejor = null, max = 0;
+                for (var k in visibles) if (visibles[k] > max) { max = visibles[k]; mejor = k; }
+                if (mejor) c.textContent = (parseInt(mejor.substring(1)) + 1) + " / " + total;
+            }, { threshold: [0, 0.25, 0.5, 0.75, 1] });
+            for (var i = 0; i < total; i++) obs.observe(document.getElementById("s" + i));
         }
+
+        // Al girar el teléfono: si la pantalla ahora es más ancha, se redibuja con más resolución
+        var anchoDibujado = 0;
+        window.addEventListener("resize", function () {
+            if (!visor) return;
+            var w = document.documentElement.clientWidth;
+            if (w > anchoDibujado * 1.2) { anchoDibujado = w; renderizarTodas(); }
+        });
+        window.addEventListener("load", function () { anchoDibujado = document.documentElement.clientWidth; });
     </script>
 </body>
 </html>

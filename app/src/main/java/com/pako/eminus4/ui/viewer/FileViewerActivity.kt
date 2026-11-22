@@ -123,6 +123,17 @@ class FileViewerActivity : AppCompatActivity() {
         toolbar.title = fileName
         toolbar.subtitle = fileSize ?: activityTitle ?: "Visualizador en línea"
         toolbar.setNavigationOnClickListener { finish() }
+        // En horizontal (botón "Girar"), Atrás regresa a vertical en vez de cerrar el visor
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) {
+                    requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
 
         layoutLoading         = findViewById(R.id.layoutLoading)
         layoutPdfViewer       = findViewById(R.id.layoutPdfViewer)
@@ -168,6 +179,30 @@ class FileViewerActivity : AppCompatActivity() {
         }
     }
 
+    /** Horizontal = pantalla completa (sin barras) para aprovechar todo el espacio. */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val horizontal = newConfig.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        findViewById<View>(R.id.appBarLayout).visibility = if (horizontal) View.GONE else View.VISIBLE
+        // El contenido va anclado debajo de la barra: en horizontal se suelta para usar toda la pantalla
+        findViewById<View>(R.id.containerContent).let { c ->
+            (c.layoutParams as? androidx.coordinatorlayout.widget.CoordinatorLayout.LayoutParams)?.let { lp ->
+                lp.behavior = if (horizontal) null else com.google.android.material.appbar.AppBarLayout.ScrollingViewBehavior()
+                c.layoutParams = lp
+            }
+            c.translationY = 0f
+            c.requestLayout()
+        }
+        val ctl = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+        if (horizontal) {
+            ctl.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            ctl.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            android.widget.Toast.makeText(this, "Toca Atrás para volver a vertical", android.widget.Toast.LENGTH_SHORT).show()
+        } else {
+            ctl.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     override fun onCreateOptionsMenu(menu: Menu?): Boolean {
         menuInflater.inflate(R.menu.menu_file_viewer, menu)
         return true
@@ -175,6 +210,13 @@ class FileViewerActivity : AppCompatActivity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
+            R.id.action_girar -> {
+                // Horizontal para ver presentaciones/documentos más grandes; otra vez para volver
+                val horizontal = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                requestedOrientation = if (horizontal) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                       else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                true
+            }
             R.id.action_share -> {
                 localFile?.let { compartirArchivo(it) }
                 true

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -18,31 +18,34 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <!-- Ícono de libro / graduación -->
-        <ImageView
-            android:layout_width="88dp"
-            android:layout_height="88dp"
+        <!-- Logo de Lumen: el ícono completo (fondo verde + libro con luz), con esquinas redondeadas -->
+        <com.google.android.material.imageview.ShapeableImageView
+            android:layout_width="112dp"
+            android:layout_height="112dp"
             android:layout_gravity="center"
             android:contentDescription="@null"
-            android:src="@drawable/ic_school"
-            app:tint="@color/bg_card" />
+            android:elevation="6dp"
+            android:src="@drawable/splash_logo"
+            app:shapeAppearanceOverlay="@style/ShapeAppearance.Material3.Corner.ExtraLarge" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="BodrioNus"
+            android:text="Lumen"
             android:textColor="@color/bg_subtle"
             android:textSize="32sp"
             android:textStyle="bold"
             android:fontFamily="sans-serif-medium"
             android:layout_gravity="center" />
 
+        <!-- El texto real (versionName completo) se pone en SplashActivity -->
         <TextView
+            android:id="@+id/txtSplashVersion"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="v2.0"
+            android:text=""
             android:textColor="#22D3EE"
             android:textSize="14sp"
             android:layout_gravity="center" />

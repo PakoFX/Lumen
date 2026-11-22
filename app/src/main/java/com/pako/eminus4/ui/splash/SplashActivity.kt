@@ -24,6 +24,13 @@ class SplashActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_splash)
 
+        // Versión completa (p. ej. "v2.8.2") tomada de build.gradle.kts: nunca escrita a mano
+        val version = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (_: Exception) { null }
+        findViewById<android.widget.TextView>(R.id.txtSplashVersion).text =
+            version?.let { "v$it" }.orEmpty()
+
         // Esperar 1.5 segundos para que la animación del logo se aprecie
         Handler(Looper.getMainLooper()).postDelayed({
             redirigir()

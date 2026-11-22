@@ -52,9 +52,15 @@ class CourseDetailActivity : AppCompatActivity() {
     private lateinit var progressActivities: ProgressBar
     private lateinit var layoutEmpty: View
     private lateinit var txtEmpty: TextView
-    private lateinit var statActividades: TextView
-    private lateinit var statForos: TextView
-    private lateinit var statIntegrantes: TextView
+    private lateinit var tabs: com.google.android.material.tabs.TabLayout
+    private lateinit var scrollSeccion: androidx.core.widget.NestedScrollView
+    private lateinit var secciones: SeccionesCurso
+    private var courseId = -1L
+
+    /** Al volver de un elemento (leído / me gusta) se refresca el contenido. */
+    private val abrirElemento = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { r -> if (r.resultCode == ElementoActivity.RESULT_CAMBIO) secciones.invalidarContenido() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,13 +78,14 @@ class CourseDetailActivity : AppCompatActivity() {
             finish()
             return
         }
+        this.courseId = courseId
 
         apiClient = EminusApiClient(SessionManager(this))
 
         inicializarVistas()
         configurarHeader(courseName, courseColor, courseThumbnail)
-        configurarStats(numActividades, numForos, numIntegrantes)
         configurarRecyclerView()
+        configurarPestanas(numActividades, numIntegrantes)
         cargarActividades(courseId)
     }
 
@@ -92,9 +99,8 @@ class CourseDetailActivity : AppCompatActivity() {
         progressActivities = findViewById(R.id.progressActivities)
         layoutEmpty       = findViewById(R.id.layoutDetailEmpty)
         txtEmpty          = findViewById(R.id.txtDetailEmpty)
-        statActividades   = findViewById(R.id.statActividades)
-        statForos         = findViewById(R.id.statForos)
-        statIntegrantes   = findViewById(R.id.statIntegrantes)
+        tabs              = findViewById(R.id.tabsCurso)
+        scrollSeccion     = findViewById(R.id.scrollSeccion)
 
         // Botón de navegación atrás
         setSupportActionBar(toolbar)
@@ -112,7 +118,7 @@ class CourseDetailActivity : AppCompatActivity() {
     }
 
     private fun configurarHeader(nombre: String, colorHex: String, thumbnailUrl: String?) {
-        collapsingToolbar.title = nombre
+        collapsingToolbar.title = com.pako.eminus4.util.NombreMateria.bonito(nombre)
         collapsingToolbar.setContentScrimColor(
             try { Color.parseColor(colorHex) } catch (_: Exception) { ContextCompat.getColor(this, R.color.brand_uv_green) }
         )
@@ -129,13 +135,70 @@ class CourseDetailActivity : AppCompatActivity() {
         }
     }
 
-    private fun configurarStats(actividades: Int, foros: Int, integrantes: Int) {
-        statActividades.text = "$actividades Act."
-        statActividades.iconoInicio(R.drawable.ic_assignment, tamanoDp = 14, separacionDp = 4)
-        statForos.text       = "$foros Foro${if (foros == 1) "" else "s"}"
-        statForos.iconoInicio(R.drawable.ic_forum, tamanoDp = 14, separacionDp = 4)
-        statIntegrantes.text = "$integrantes"
-        statIntegrantes.iconoInicio(R.drawable.ic_group, tamanoDp = 14, separacionDp = 4)
+    /** Actividades · Contenido · Miembros · Seguimiento (como las secciones de Eminus web). */
+    private fun configurarPestanas(actividades: Int, integrantes: Int) {
+        secciones = SeccionesCurso(this, apiClient, courseId, findViewById(R.id.contenedorSeccion),
+            alTerminar = { swipeRefresh.isRefreshing = false },
+            abrirElemento = { e, unidad ->
+                abrirElemento.launch(ElementoActivity.intent(this, courseId, unidad, e))
+            },
+            abrirActividad = { t, lista ->
+                val conId = lista.filter { it.id > 0 }
+                abrirDetalleActividad(t.id, t.titulo.orEmpty(),
+                    conId.map { it.id }.toLongArray(), conId.map { it.titulo.orEmpty() }.toTypedArray())
+            })
+        listOf(
+            if (actividades > 0) "Actividades $actividades" else "Actividades",
+            "Contenido",
+            if (integrantes > 0) "Miembros $integrantes" else "Miembros",
+            "Seguimiento"
+        ).forEach { tabs.addTab(tabs.newTab().setText(it)) }
+        tabs.addOnTabSelectedListener(object : com.google.android.material.tabs.TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: com.google.android.material.tabs.TabLayout.Tab) = mostrarPestana(tab.position)
+            override fun onTabUnselected(tab: com.google.android.material.tabs.TabLayout.Tab) {}
+            override fun onTabReselected(tab: com.google.android.material.tabs.TabLayout.Tab) {
+                if (tab.position == 0) rvActivities.smoothScrollToPosition(0) else scrollSeccion.smoothScrollTo(0, 0)
+            }
+        })
+        // Deslizar para recargar debe respetar la lista que está visible
+        swipeRefresh.setOnChildScrollUpCallback { _, _ ->
+            if (tabs.selectedTabPosition == 0) rvActivities.canScrollVertically(-1) else scrollSeccion.canScrollVertically(-1)
+        }
+    }
+
+    /** Detalle de actividad (desde Actividades o desde Seguimiento). */
+    private fun abrirDetalleActividad(id: Long, titulo: String, ids: LongArray, titulos: Array<String>) {
+        val index = ids.indexOf(id)
+        startActivity(Intent(this, ActivityDetailActivity::class.java).apply {
+            putExtra(ActivityDetailActivity.EXTRA_COURSE_ID, courseId)
+            putExtra(ActivityDetailActivity.EXTRA_COURSE_NAME, intent.getStringExtra(EXTRA_COURSE_NAME) ?: "Curso")
+            putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_ID, id)
+            putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_TITLE, titulo)
+            putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_IDS, ids)
+            putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_TITLES, titulos)
+            putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_INDEX, if (index >= 0) index else 0)
+        })
+    }
+
+    private fun seccionDe(pos: Int) = when (pos) {
+        1 -> SeccionesCurso.Seccion.CONTENIDO
+        2 -> SeccionesCurso.Seccion.MIEMBROS
+        else -> SeccionesCurso.Seccion.SEGUIMIENTO
+    }
+
+    private fun mostrarPestana(pos: Int, recargar: Boolean = false) {
+        val esActividades = pos == 0
+        rvActivities.visibility = if (esActividades) View.VISIBLE else View.GONE
+        scrollSeccion.visibility = if (esActividades) View.GONE else View.VISIBLE
+        layoutEmpty.visibility = View.GONE
+        progressActivities.visibility = View.GONE
+        if (esActividades) {
+            if (recargar || activityAdapter.currentList.isEmpty()) cargarActividades(courseId)
+            else layoutEmpty.visibility = View.GONE
+        } else {
+            scrollSeccion.scrollTo(0, 0)
+            secciones.mostrar(seccionDe(pos), recargar)
+        }
     }
 
     private fun configurarRecyclerView() {
@@ -159,10 +222,7 @@ class CourseDetailActivity : AppCompatActivity() {
         rvActivities.layoutManager = LinearLayoutManager(this)
         rvActivities.adapter = activityAdapter
 
-        swipeRefresh.setOnRefreshListener {
-            val courseId = intent.getLongExtra(EXTRA_COURSE_ID, -1L)
-            if (courseId != -1L) cargarActividades(courseId)
-        }
+        swipeRefresh.setOnRefreshListener { mostrarPestana(tabs.selectedTabPosition, recargar = true) }
     }
 
     private fun cargarActividades(idCurso: Long) {
@@ -175,6 +235,7 @@ class CourseDetailActivity : AppCompatActivity() {
             progressActivities.visibility = View.GONE
             swipeRefresh.isRefreshing = false
 
+            if (tabs.selectedTabPosition != 0) return@getActivities
             result.onSuccess { actividades ->
                 activityAdapter.submitList(actividades)
                 if (actividades.isEmpty()) {

@@ -18,16 +18,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:paddingHorizontal="16dp"
-            android:paddingTop="16dp"
+            android:paddingTop="10dp"
             android:paddingBottom="12dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Perfil de Estudiante"
-                android:textColor="@color/text_primary"
-                android:textSize="22sp"
-                android:textStyle="bold" />
 
             <TextView
                 android:layout_width="wrap_content"
@@ -76,7 +68,7 @@
                         android:background="@drawable/bg_avatar_circle"
                         android:contentDescription="Foto de perfil"
                         android:scaleType="centerCrop"
-                        android:src="@drawable/ic_nav_profile"
+                        android:src="@drawable/avatar_vacio"
                         android:clipToOutline="true" />
 
                     <!-- Datos del estudiante -->
@@ -158,6 +150,19 @@
                 app:icon="@drawable/ic_qr_code"
                 app:iconGravity="textStart"
                 app:iconTint="@color/bg_card" />
+
+            <!-- Por si la foto oficial no cargó: volver a traerla de MiUV -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnRecargarFoto"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="¿No se ve tu foto? Volver a cargarla"
+                android:textColor="@color/brand_uv_green"
+                android:textSize="13sp"
+                app:icon="@drawable/ic_refresh"
+                app:iconGravity="textStart"
+                app:iconTint="@color/brand_uv_green" />
 
             <!-- Datos institucionales de contacto -->
             <com.google.android.material.card.MaterialCardView
@@ -251,8 +256,8 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="2dp"
-                            android:text="Sesión activa con token JWT institucional"
-                            android:textColor="#2E7D32"
+                            android:text="Activa"
+                            android:textColor="@color/badge_success_text"
                             android:textSize="13sp"
                             android:textStyle="bold" />
                     </LinearLayout>
@@ -337,17 +342,55 @@
                         android:background="@color/border_subtle" />
 
                     <!-- Botón buscar actualizaciones -->
+                    <!-- Notificaciones y recordatorios -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnNotificaciones"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="Notificaciones y recordatorios"
+                        android:textColor="@color/brand_uv_green"
+                        app:strokeColor="@color/brand_uv_green"
+                        app:icon="@drawable/ic_schedule"
+                        app:iconTint="@color/brand_uv_green" />
+
+                    <!-- Buzón de sugerencias -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnSugerencias"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="Buzón de sugerencias"
+                        android:textColor="@color/brand_uv_green"
+                        app:strokeColor="@color/brand_uv_green"
+                        app:icon="@drawable/ic_edit_note"
+                        app:iconTint="@color/brand_uv_green" />
+
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnCheckUpdates"
                         style="@style/Widget.Material3.Button.OutlinedButton"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
+                        android:layout_marginTop="8dp"
                         android:text="Buscar actualizaciones"
                         android:textColor="@color/brand_uv_green"
                         app:strokeColor="@color/brand_uv_green"
                         app:icon="@drawable/ic_nav_reload"
                         app:iconTint="@color/brand_uv_green" />
+
+                    <!-- Qué hay de nuevo (discreto) -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnQueHayDeNuevo"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Qué hay de nuevo"
+                        android:textColor="@color/text_secondary"
+                        app:icon="@drawable/ic_rocket_launch"
+                        app:iconTint="@color/text_secondary" />
 
                     <!-- Botón cerrar sesión -->
                     <com.google.android.material.button.MaterialButton
@@ -362,8 +405,31 @@
                         app:icon="@drawable/ic_logout"
                         app:iconTint="#EF4444" />
 
+                    <!-- Privacidad (discreto) -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnPrivacidad"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Privacidad y aviso legal"
+                        android:textColor="@color/text_secondary"
+                        app:icon="@drawable/ic_shield_privacidad"
+                        app:iconTint="@color/text_secondary" />
+
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="8dp"
+                android:gravity="center"
+                android:paddingHorizontal="16dp"
+                android:text="@string/aviso_no_oficial"
+                android:textColor="@color/text_tertiary"
+                android:textSize="11sp" />
 
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>

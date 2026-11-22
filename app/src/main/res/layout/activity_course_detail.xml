@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -10,20 +10,24 @@
     <com.google.android.material.appbar.AppBarLayout
         android:id="@+id/detailAppBar"
         android:layout_width="match_parent"
-        android:layout_height="200dp"
+        android:layout_height="wrap_content"
         android:fitsSystemWindows="true"
         app:liftOnScroll="false">
 
         <com.google.android.material.appbar.CollapsingToolbarLayout
             android:id="@+id/collapsingToolbar"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
+            android:layout_height="170dp"
             android:fitsSystemWindows="true"
             app:layout_scrollFlags="scroll|exitUntilCollapsed|snap"
             app:contentScrim="?attr/colorPrimary"
             app:expandedTitleTextAppearance="@style/TextAppearance.Material3.HeadlineMedium"
             app:expandedTitleMarginStart="16dp"
-            app:expandedTitleMarginBottom="72dp"
+            app:expandedTitleMarginBottom="16dp"
+            app:expandedTitleMarginEnd="16dp"
+            app:maxLines="2"
+            app:expandedTitleTextColor="@android:color/white"
+            app:collapsedTitleTextColor="@android:color/white"
             app:collapsedTitleTextAppearance="@style/TextAppearance.Material3.TitleMedium">
 
             <FrameLayout
@@ -64,53 +68,22 @@
 
         </com.google.android.material.appbar.CollapsingToolbarLayout>
 
-        <!-- Chips de estadísticas del curso debajo del header -->
-        <LinearLayout
-            android:id="@+id/detailStatsBar"
+        <!-- Secciones de la materia (con sus números) -->
+        <com.google.android.material.tabs.TabLayout
+            android:id="@+id/tabsCurso"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="6dp"
-            android:background="@color/bg_card">
-
-            <TextView
-                android:id="@+id/statActividades"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="0 Act."
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:textColor="@color/text_primary"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="5dp"
-                android:background="@drawable/bg_stat_pill" />
-
-            <TextView
-                android:id="@+id/statForos"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="0 Foros"
-                android:textSize="12sp"
-                android:textColor="@color/text_title"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="5dp"
-                android:background="@drawable/bg_stat_pill" />
-
-            <TextView
-                android:id="@+id/statIntegrantes"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="0"
-                android:textSize="12sp"
-                android:textColor="@color/text_secondary"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="5dp"
-                android:background="@drawable/bg_stat_pill" />
-
-        </LinearLayout>
+            android:background="@color/bg_card"
+            app:tabGravity="start"
+            app:tabIndicatorColor="@color/brand_uv_green"
+            app:tabIndicatorFullWidth="false"
+            app:tabMinWidth="0dp"
+            app:tabMode="scrollable"
+            app:tabPaddingEnd="14dp"
+            app:tabPaddingStart="14dp"
+            app:tabSelectedTextColor="@color/brand_uv_green"
+            app:tabTextAppearance="@style/TextAppearance.Material3.LabelLarge"
+            app:tabTextColor="@color/text_secondary" />
 
     </com.google.android.material.appbar.AppBarLayout>
 
@@ -132,6 +105,24 @@
                 android:clipToPadding="false"
                 android:paddingTop="8dp"
                 android:paddingBottom="32dp" />
+
+            <!-- Contenido / Miembros / Seguimiento -->
+            <androidx.core.widget.NestedScrollView
+                android:id="@+id/scrollSeccion"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/contenedorSeccion"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingHorizontal="16dp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="32dp" />
+            </androidx.core.widget.NestedScrollView>
 
             <ProgressBar
                 android:id="@+id/progressActivities"

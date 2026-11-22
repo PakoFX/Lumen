@@ -1,3 +1,5 @@
 <resources>
-    <string name="app_name">Eminus 4</string>
+    <string name="app_name">Lumen</string>
+    <string name="aviso_no_oficial_corto">Lumen es una app independiente y no oficial, no afiliada a la Universidad Veracruzana. Tu contraseña no se guarda.</string>
+    <string name="aviso_no_oficial">Lumen es una app independiente y no oficial. No está afiliada, patrocinada ni respaldada por la Universidad Veracruzana. Eminus y MiUV son servicios de la UV.</string>
 </resources>

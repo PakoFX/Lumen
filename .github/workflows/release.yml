@@ -17,13 +17,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '21'
           distribution: 'temurin'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Make gradlew executable
         run: chmod +x gradlew
@@ -59,14 +59,14 @@ jobs:
       - name: Prepare APK for Release
         run: |
           mkdir -p release-apk
-          cp app/build/outputs/apk/debug/app-debug.apk release-apk/BodrioNus.apk
+          cp app/build/outputs/apk/debug/app-debug.apk release-apk/Lumen.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: release-apk/BodrioNus.apk
-          name: Bodrio-Nus ${{ github.ref_name }}
+          files: release-apk/Lumen.apk
+          name: Lumen ${{ github.ref_name }}
           draft: false
           prerelease: false
           generate_release_notes: true

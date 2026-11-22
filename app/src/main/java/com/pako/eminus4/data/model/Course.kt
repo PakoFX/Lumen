@@ -18,8 +18,13 @@ data class Course(
     @SerializedName("tipoPerfil") val tipoPerfil: String? = null,
     @SerializedName("fechaInicioEpoch") val fechaInicioEpoch: Long = 0,
     @SerializedName("fechaTerminoEpoch") val fechaTerminoEpoch: Long = 0,
-    @SerializedName("fechaCreacionEpoch") val fechaCreacionEpoch: Long = 0
+    @SerializedName("fechaCreacionEpoch") val fechaCreacionEpoch: Long = 0,
+    /** 1 = el alumno lo archivó en Eminus (solo se oculta de la lista; ver `esArchivado`). */
+    @SerializedName("archivado") val archivado: Int = 0
 ) {
+    /** Igual que Eminus web: los archivados solo aparecen en "Archivados" (y en "Todos"). */
+    fun esArchivado(): Boolean = archivado == 1
+
     /**
      * Determina si el curso está activo comparando su fecha de término
      * con el timestamp actual en segundos.

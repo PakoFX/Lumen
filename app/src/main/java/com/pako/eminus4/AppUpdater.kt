@@ -1,7 +1,6 @@
 package com.pako.eminus4
 
 import android.app.Activity
-import android.app.ProgressDialog
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -9,9 +8,12 @@ import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import android.util.Log
+import android.view.View
+import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.core.content.FileProvider
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -38,7 +40,7 @@ object AppUpdater {
 
                 val url = URL(LATEST_RELEASE_API)
                 val connection = (url.openConnection() as HttpURLConnection).apply {
-                    setRequestProperty("User-Agent", "BodrioNusApp")
+                    setRequestProperty("User-Agent", "LumenApp")
                     setRequestProperty("Accept", "application/vnd.github.v3+json")
                     connectTimeout = 8000
                     readTimeout = 8000
@@ -56,7 +58,7 @@ object AppUpdater {
                     // Buscar el archivo APK en los assets del release
                     val assets = json.optJSONArray("assets")
                     var downloadUrl = ""
-                    var apkFileName = "BodrioNus_${tagName}.apk"
+                    var apkFileName = "Lumen_${tagName}.apk"
 
                     if (assets != null) {
                         for (i in 0 until assets.length()) {
@@ -74,6 +76,7 @@ object AppUpdater {
                         activity.runOnUiThread {
                             mostrarDialogoActualizacion(
                                 activity,
+                                currentVersionName,
                                 tagName,
                                 releaseTitle,
                                 releaseNotes,
@@ -134,19 +137,37 @@ object AppUpdater {
         return false
     }
 
+    /** Aviso con diseño: salto de versión, novedades y nota de seguridad de Android. */
     private fun mostrarDialogoActualizacion(
         activity: Activity,
+        versionActual: String,
         tagName: String,
         title: String,
         notes: String,
         downloadUrl: String,
         apkFileName: String
     ) {
-        val mensajeNotas = if (notes.isNotBlank()) "\n\nNovedades:\n$notes" else ""
-        AlertDialog.Builder(activity)
-            .setTitle("Actualización disponible ($tagName)")
-            .setIcon(R.drawable.ic_rocket_launch)
-            .setMessage("Hay una nueva versión de Bodrio-Nus disponible.$mensajeNotas\n\n¿Deseas descargar e instalar la actualización ahora?")
+        if (activity.isFinishing || activity.isDestroyed) return
+        val vista = activity.layoutInflater.inflate(R.layout.dialog_actualizacion, null)
+        vista.findViewById<TextView>(R.id.txtVersionActual).text = "v" + versionActual.removePrefix("v")
+        vista.findViewById<TextView>(R.id.txtVersionNueva).text = "v" + tagName.removePrefix("v").removePrefix("V")
+
+        val novedades = limpiarNotas(notes)
+        if (novedades.isBlank()) {
+            vista.findViewById<View>(R.id.txtNovedadesTitulo).visibility = View.GONE
+            vista.findViewById<View>(R.id.scrollNovedades).visibility = View.GONE
+        } else {
+            vista.findViewById<TextView>(R.id.txtNovedades).text = novedades
+            // Novedades largas: se desplazan dentro de un alto máximo
+            val maxAlto = (160 * activity.resources.displayMetrics.density).toInt()
+            vista.findViewById<View>(R.id.scrollNovedades).post {
+                val s = vista.findViewById<View>(R.id.scrollNovedades)
+                if (s.height > maxAlto) s.layoutParams = s.layoutParams.apply { height = maxAlto }
+            }
+        }
+
+        MaterialAlertDialogBuilder(activity)
+            .setView(vista)
             .setPositiveButton("Actualizar") { _, _ ->
                 descargarEInstalarApk(activity, downloadUrl, apkFileName)
             }
@@ -154,16 +175,35 @@ object AppUpdater {
             .show()
     }
 
+    /**
+     * Notas de GitHub ("What's Changed", "by @x in https://…", "Full Changelog") → lista legible.
+     */
+    private fun limpiarNotas(notes: String): String =
+        notes.lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() && !it.startsWith("#") && !it.contains("Full Changelog", true) && !it.startsWith("**New Contributors") }
+            .map { l ->
+                l.replace(Regex("""\s+by @\S+\s+in\s+https?://\S+"""), "")
+                    .replace(Regex("""https?://\S+"""), "")
+                    .replace("**", "")
+                    .replace(Regex("""^[*-]\s+"""), "• ")
+                    .trim()
+            }
+            .filter { it.isNotBlank() && it != "•" }
+            .take(8)
+            .joinToString("\n")
+
     private fun descargarEInstalarApk(activity: Activity, downloadUrl: String, apkFileName: String) {
-        @Suppress("DEPRECATION")
-        val progressDialog = ProgressDialog(activity).apply {
-            setTitle("Descargando actualización")
-            setMessage("Descargando la nueva versión...")
-            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
-            setCancelable(false)
-            max = 100
-            show()
-        }
+        val vista = activity.layoutInflater.inflate(R.layout.dialog_descarga, null)
+        val barra = vista.findViewById<LinearProgressIndicator>(R.id.progresoDescarga)
+        val txtPorcentaje = vista.findViewById<TextView>(R.id.txtDescargaPorcentaje)
+        val txtDetalle = vista.findViewById<TextView>(R.id.txtDescargaDetalle)
+        val progressDialog = MaterialAlertDialogBuilder(activity)
+            .setView(vista)
+            .setCancelable(false)
+            .show()
+        var ultimoProgreso = -1
+        fun mb(bytes: Long) = "%.1f MB".format(bytes / 1_048_576.0)
 
         thread {
             try {
@@ -189,8 +229,18 @@ object AppUpdater {
                             output.write(buffer, 0, count)
                             if (fileLength > 0) {
                                 val progress = (total * 100 / fileLength).toInt()
-                                activity.runOnUiThread {
-                                    progressDialog.progress = progress
+                                if (progress != ultimoProgreso) {
+                                    ultimoProgreso = progress
+                                    val descargado = total
+                                    activity.runOnUiThread {
+                                        if (barra.isIndeterminate) {
+                                            barra.isIndeterminate = false
+                                            barra.max = 100
+                                        }
+                                        barra.setProgressCompat(progress, true)
+                                        txtPorcentaje.text = "$progress%"
+                                        txtDetalle.text = "${mb(descargado)} de ${mb(fileLength.toLong())}"
+                                    }
                                 }
                             }
                         }

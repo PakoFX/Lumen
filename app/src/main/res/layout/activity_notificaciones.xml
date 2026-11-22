@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Perfil → Notificaciones: qué y cuándo recordar -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootNotif"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_subtle"
+    android:orientation="vertical">
+
+    <com.google.android.material.appbar.AppBarLayout
+        android:id="@+id/appBarLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bg_card"
+        app:elevation="2dp">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            app:navigationIcon="@drawable/abc_ic_ab_back_material"
+            app:title="Notificaciones"
+            app:titleTextColor="@color/text_primary" />
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/scrollNotif"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <!-- Interruptor general -->
+            <com.google.android.material.card.MaterialCardView
+                style="@style/TarjetaAjustes"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/swActivadas"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Recordatorios"
+                        android:textSize="17sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/txtResumenAlarmas"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- Para que lleguen a tiempo -->
+            <LinearLayout
+                android:id="@+id/seccionPermisos"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/txtTituloPermisos"
+                style="@style/TituloSeccionAjustes"
+                android:text="PARA QUE LLEGUEN A TIEMPO" />
+
+            <TextView
+                android:id="@+id/txtAyudaPermisos"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_marginBottom="8dp"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+
+            <com.google.android.material.card.MaterialCardView
+                style="@style/TarjetaAjustes"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <LinearLayout
+                    android:id="@+id/layoutPermisos"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingHorizontal="16dp"
+                    android:paddingVertical="6dp" />
+            </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/contenidoAjustes"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <!-- Qué -->
+                <TextView
+                    style="@style/TituloSeccionAjustes"
+                    android:text="¿QUÉ TE RECORDAMOS?" />
+
+                <com.google.android.material.card.MaterialCardView
+                    style="@style/TarjetaAjustes"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="16dp"
+                        android:paddingVertical="6dp">
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/swTareas"
+                            style="@style/SwitchAjustes"
+                            android:text="Tareas por vencer" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/swVencida"
+                            style="@style/SwitchAjustes"
+                            android:text="Avisar si venció y no entregué" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/swExamenes"
+                            style="@style/SwitchAjustes"
+                            android:text="Exámenes por cerrar" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/swExamenAbre"
+                            style="@style/SwitchAjustes"
+                            android:text="Cuando abra un examen" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/swForos"
+                            style="@style/SwitchAjustes"
+                            android:text="Foros por cerrar" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/swEmojis"
+                            style="@style/SwitchAjustes"
+                            android:text="Usar emojis en las notificaciones" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Cuándo -->
+                <TextView
+                    style="@style/TituloSeccionAjustes"
+                    android:text="¿CUÁNTO ANTES DEL CIERRE?" />
+
+                <com.google.android.material.card.MaterialCardView
+                    style="@style/TarjetaAjustes"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Marca todos los que quieras: te avisaremos en cada uno."
+                            android:textColor="@color/text_secondary"
+                            android:textSize="13sp" />
+
+                        <com.google.android.material.chip.ChipGroup
+                            android:id="@+id/chipsMinutos"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnProbar"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:text="Probar una notificación"
+                    android:textColor="@color/brand_uv_green"
+                    app:icon="@drawable/ic_schedule"
+                    app:iconTint="@color/brand_uv_green"
+                    app:strokeColor="@color/brand_uv_green" />
+            </LinearLayout>
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+</LinearLayout>

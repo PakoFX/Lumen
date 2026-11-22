@@ -28,13 +28,13 @@ import com.pako.eminus4.data.model.ExamItem
 import com.pako.eminus4.data.model.ForumItem
 import com.pako.eminus4.data.model.MessageItem
 import com.pako.eminus4.ui.courses.ActividadCardBinder
-import com.pako.eminus4.ui.courses.AllActivitiesActivity
 import com.pako.eminus4.ui.exams.ExamsActivity
 import com.pako.eminus4.ui.forums.ForumsActivity
 import com.pako.eminus4.ui.main.MainActivity
 import com.pako.eminus4.ui.messages.MessageDetailActivity
 import com.pako.eminus4.ui.messages.MessagesActivity
 import com.pako.eminus4.util.Plazos
+import com.pako.eminus4.util.iconoInicio
 import java.util.concurrent.TimeUnit
 
 /**
@@ -49,8 +49,9 @@ class NotificationsFragment : Fragment() {
     companion object {
         private const val MAX_POR_HACER = 5
         private const val MAX_FILAS = 3
+        private const val MAX_NOVEDADES = 8
         private val DIAS_CALIFICACION_RECIENTE = TimeUnit.DAYS.toMillis(14)
-        private val HORAS_URGENTE = TimeUnit.HOURS.toMillis(72)
+        private val HORAS_URGENTE = TimeUnit.HOURS.toMillis(96)  // "vence en 3 días" también cuenta como pronto
         private const val RECARGA_MIN_MS = 60_000L
     }
 
@@ -79,12 +80,33 @@ class NotificationsFragment : Fragment() {
     private lateinit var layoutExamenes: LinearLayout
     private lateinit var seccionForos: View
     private lateinit var layoutForos: LinearLayout
-    private lateinit var cardEsperando: MaterialCardView
-    private lateinit var txtEsperando: TextView
-    private lateinit var badgeAccesoActividades: TextView
-    private lateinit var badgeAccesoMensajes: TextView
-    private lateinit var badgeAccesoForos: TextView
-    private lateinit var badgeAccesoExamenes: TextView
+
+    private lateinit var statPorHacer: View
+    private lateinit var statUrgentes: View
+    private lateinit var statRevision: View
+    private lateinit var layoutResumenStats: View
+    private lateinit var layoutResumenEstado: View
+    private lateinit var txtResumenProximo: TextView
+    private lateinit var seccionPorMateria: View
+    private lateinit var layoutPorMateria: LinearLayout
+
+    /** Datos cargados (sin filtrar). Se repinta todo con el filtro de materia actual. */
+    private var agenda: AgendaLoader.Resultado? = null
+    private var examenesDatos: List<ExamItem> = emptyList()
+    private var forosDatos: List<ForumItem> = emptyList()
+    private var mensajesDatos: List<MessageItem> = emptyList()
+    /** null = todas las materias. */
+    private var materiaSel: Long? = null
+
+    /** Qué fuentes cargaron completas desde Eminus (solo con esas se programan recordatorios y novedades). */
+    private var agendaOk = false
+    private var examenesOk = false
+    private var forosOk = false
+    private var mensajesOk = false
+
+    private lateinit var seccionNovedades: View
+    private lateinit var txtTituloNovedades: TextView
+    private lateinit var layoutNovedades: LinearLayout
 
     /** Evita pintar resultados viejos si se lanzó otra carga mientras tanto. */
     private var generacion = 0
@@ -114,14 +136,7 @@ class NotificationsFragment : Fragment() {
     }
 
     private fun inicializarVistas(view: View) {
-        val appBarLayout = view.findViewById<View>(R.id.appBarLayout)
-        ViewCompat.setOnApplyWindowInsetsListener(appBarLayout) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            val bannerVisible = (activity as? MainActivity)?.isBannerVisible() == true
-            v.setPadding(0, if (bannerVisible) 0 else systemBars.top, 0, 0)
-            insets
-        }
-
+        // La barra de estado la cubre la barra superior de MainActivity
         swipeRefreshLayout = view.findViewById(R.id.swipeRefreshLayout)
         txtHoy = view.findViewById(R.id.txtHoy)
         cardResumen = view.findViewById(R.id.cardResumen)
@@ -143,27 +158,30 @@ class NotificationsFragment : Fragment() {
         layoutExamenes = view.findViewById(R.id.layoutExamenes)
         seccionForos = view.findViewById(R.id.seccionForos)
         layoutForos = view.findViewById(R.id.layoutForos)
-        cardEsperando = view.findViewById(R.id.cardEsperando)
-        txtEsperando = view.findViewById(R.id.txtEsperando)
-        badgeAccesoActividades = view.findViewById(R.id.badgeAccesoActividades)
-        badgeAccesoMensajes = view.findViewById(R.id.badgeAccesoMensajes)
-        badgeAccesoForos = view.findViewById(R.id.badgeAccesoForos)
-        badgeAccesoExamenes = view.findViewById(R.id.badgeAccesoExamenes)
+        seccionPorMateria = view.findViewById(R.id.seccionPorMateria)
+        layoutPorMateria = view.findViewById(R.id.layoutPorMateria)
+        seccionNovedades = view.findViewById(R.id.seccionNovedades)
+        txtTituloNovedades = view.findViewById(R.id.txtTituloNovedades)
+        layoutNovedades = view.findViewById(R.id.layoutNovedades)
+        view.findViewById<View>(R.id.btnMarcarVisto).setOnClickListener { marcarNovedadesVistas() }
 
         txtHoy.text = Plazos.hoyLargo()
 
-        btnVerMasPorHacer.setOnClickListener {
-            AllActivitiesActivity.start(requireContext(), AllActivitiesActivity.Pestana.POR_HACER)
-        }
-        cardEsperando.setOnClickListener {
-            AllActivitiesActivity.start(requireContext(), AllActivitiesActivity.Pestana.ESPERANDO)
-        }
-        view.findViewById<View>(R.id.accesoActividades).setOnClickListener {
-            AllActivitiesActivity.start(requireContext())
-        }
-        view.findViewById<View>(R.id.accesoMensajes).setOnClickListener { MessagesActivity.start(requireContext()) }
-        view.findViewById<View>(R.id.accesoForos).setOnClickListener { ForumsActivity.start(requireContext()) }
-        view.findViewById<View>(R.id.accesoExamenes).setOnClickListener { ExamsActivity.start(requireContext()) }
+        btnVerMasPorHacer.setOnClickListener { PendientesActivity.start(requireContext()) }
+        // Resumen: tres números que abren el desglose
+        fun stat(id: Int, etiqueta: String, enfoque: PendientesActivity.Enfoque) =
+            view.findViewById<View>(id).apply {
+                findViewById<TextView>(R.id.txtStatEtiqueta).text = etiqueta
+                setOnClickListener { PendientesActivity.start(requireContext(), enfoque = enfoque) }
+            }
+        statPorHacer = stat(R.id.statPorHacer, "Por hacer", PendientesActivity.Enfoque.TODO)
+        statUrgentes = stat(R.id.statUrgentes, "Vencen pronto", PendientesActivity.Enfoque.URGENTE)
+        statRevision = stat(R.id.statRevision, "En revisión", PendientesActivity.Enfoque.REVISION)
+        layoutResumenStats = view.findViewById(R.id.layoutResumenStats)
+        layoutResumenEstado = view.findViewById(R.id.layoutResumenEstado)
+        txtResumenProximo = view.findViewById(R.id.txtResumenProximo)
+        // Los accesos a Actividades/Foros/Exámenes viven en el menú lateral y Mensajes en la
+        // barra superior (MainActivity); aquí solo se calculan sus contadores.
 
         swipeRefreshLayout.setColorSchemeColors(ContextCompat.getColor(requireContext(), R.color.brand_uv_green))
         swipeRefreshLayout.setOnRefreshListener { cargar(forzar = true) }
@@ -194,23 +212,25 @@ class NotificationsFragment : Fragment() {
     private fun cargarNovedades(gen: Int, cursos: List<Course>) {
         apiClient.getMessages(folderId = 1) { res ->
             if (!vigente(gen)) return@getMessages
-            pintarMensajes(res.getOrNull()?.filter { it.esNoLeido } ?: emptyList())
+            pintarMensajes(res.getOrNull()?.filter { it.esNoLeido } ?: emptyList(), ok = res.isSuccess)
         }
 
         // Exámenes: solo cursos que los tienen
         val conExamenes = cursos.filter { it.examenes > 0 }
         val examenes = mutableListOf<ExamItem>()
         var pendExamenes = conExamenes.size
-        if (pendExamenes == 0) pintarExamenes(emptyList())
+        var erroresExamenes = 0
+        if (pendExamenes == 0) pintarExamenes(emptyList(), ok = true)
         for (c in conExamenes) {
             apiClient.getExams(c.idCurso) { res ->
                 if (!vigente(gen)) return@getExams
+                if (res.isFailure) erroresExamenes++
                 res.getOrNull()?.forEach {
                     it.idCurso = c.idCurso
                     it.nombreCurso = c.getNombreLimpio()
                     examenes.add(it)
                 }
-                if (--pendExamenes == 0) pintarExamenes(examenes)
+                if (--pendExamenes == 0) pintarExamenes(examenes, ok = erroresExamenes == 0)
             }
         }
 
@@ -218,36 +238,316 @@ class NotificationsFragment : Fragment() {
         val conForos = cursos.filter { it.foros > 0 }
         val foros = mutableListOf<ForumItem>()
         var pendForos = conForos.size
-        if (pendForos == 0) pintarForos(emptyList())
+        var erroresForos = 0
+        if (pendForos == 0) pintarForos(emptyList(), ok = true)
         for (c in conForos) {
             apiClient.getForums(c.idCurso) { res ->
                 if (!vigente(gen)) return@getForums
+                if (res.isFailure) erroresForos++
                 res.getOrNull()?.forEach {
                     it.idCurso = c.idCurso
                     it.nombreCurso = c.getNombreLimpio()
+                    it.cursoActivo = c.isActivo()
                     foros.add(it)
                 }
-                if (--pendForos == 0) pintarForos(foros)
+                if (--pendForos == 0) pintarForos(foros, ok = erroresForos == 0)
             }
         }
     }
 
-    // ===================== AGENDA =====================
+    // ===================== DATOS (sin filtrar) → REPINTAR =====================
 
     private fun pintarAgenda(r: AgendaLoader.Resultado) {
+        agenda = r
+        // Solo con datos completos y frescos (si faltan cursos, no borrar recordatorios buenos)
+        agendaOk = !r.desdeCache && !r.sesionExpirada && r.cursosConError == 0
+        if (agendaOk) com.pako.eminus4.notificaciones.Recordatorios.actualizarTareas(requireContext(), r.actividades)
+        // Contador del menú: siempre global
+        ponerContador(MainActivity.Contador.ACTIVIDADES, r.actividades.count { it.activity.estadoAlumno.esPendiente })
+        repintar()
+    }
+
+    private fun pintarMensajes(noLeidos: List<MessageItem>, ok: Boolean) {
+        mensajesDatos = noLeidos
+        mensajesOk = ok
+        ponerContador(MainActivity.Contador.MENSAJES, noLeidos.size)
+        repintar()
+    }
+
+    private fun pintarExamenes(examenes: List<ExamItem>, ok: Boolean) {
+        examenesDatos = examenes
+        examenesOk = ok && agendaOk
+        if (examenesOk) com.pako.eminus4.notificaciones.Recordatorios.actualizarExamenes(requireContext(), examenes)
+        ponerContador(MainActivity.Contador.EXAMENES, examenesDisponibles(examenes).size)
+        repintar()
+    }
+
+    private fun pintarForos(foros: List<ForumItem>, ok: Boolean) {
+        forosDatos = foros
+        forosOk = ok && agendaOk
+        if (forosOk) com.pako.eminus4.notificaciones.Recordatorios.actualizarForos(requireContext(), foros)
+        ponerContador(MainActivity.Contador.FOROS, forosConNovedades(foros).size)
+        repintar()
+    }
+
+    private fun examenesDisponibles(examenes: List<ExamItem>): List<ExamItem> {
+        val ahora = System.currentTimeMillis()
+        return examenes
+            .filter { !it.estaCalificado && !it.estaVencido }
+            .filter { (Plazos.parseIso(it.fechaInicio) ?: 0L) <= ahora }
+            .sortedBy { Plazos.parseIso(it.fechaTermino) ?: Long.MAX_VALUE }
+    }
+
+    private fun forosConNovedades(foros: List<ForumItem>) =
+        foros.filter { it.nuevosComentarios > 0 }.sortedByDescending { it.nuevosComentarios }
+
+    /** Repinta todas las secciones aplicando el filtro de materia. */
+    private fun repintar() {
+        val r = agenda ?: return
+        if (!isAdded || view == null) return
+        // Tocar una materia ya no filtra Avisos: abre Pendientes (pantalla aparte)
+        materiaSel = null
+        val curso: Course? = null
+        AvisosDatos.cursos = r.cursos
+        AvisosDatos.actividades = r.actividades
+        AvisosDatos.examenesDisponibles = examenesDisponibles(examenesDatos)
+        AvisosDatos.forosNuevos = forosConNovedades(forosDatos)
+        AvisosDatos.mensajesNoLeidos = mensajesDatos
+
+        pintarNovedades(r, curso)
+        val acts = if (curso == null) r.actividades else r.actividades.filter { it.courseId == curso.idCurso }
+        pintarSeccionesAgenda(r, acts, curso)
+        pintarPorMateria(r, visible = curso == null)
+        pintarSeccionMensajes(if (curso == null) mensajesDatos else mensajesDatos.filter { esDeMateria(it, curso) })
+        pintarSeccionExamenes(if (curso == null) examenesDatos else examenesDatos.filter { it.idCurso == curso.idCurso })
+        pintarSeccionForos(if (curso == null) forosDatos else forosDatos.filter { it.idCurso == curso.idCurso })
+    }
+
+    private fun esDeMateria(m: MessageItem, c: Course) =
+        m.curso != null && m.getCursoLimpio().equals(c.getNombreLimpio(), ignoreCase = true)
+
+    // ===================== NOVEDADES DESDE LA ÚLTIMA VISITA =====================
+
+    /** Las fuentes que no cargaron completas se pasan como null (no se comparan). */
+    private fun calcularNovedades(r: AgendaLoader.Resultado) = com.pako.eminus4.notificaciones.Novedades.calcular(
+        requireContext(),
+        acts = r.actividades.takeIf { agendaOk },
+        exams = examenesDatos.takeIf { examenesOk },
+        foros = forosDatos.takeIf { forosOk },
+        msgs = mensajesDatos.takeIf { mensajesOk }
+    )
+
+    private fun pintarNovedades(r: AgendaLoader.Resultado, curso: Course?) {
+        val todas = calcularNovedades(r)
+        ponerContador(MainActivity.Contador.NOVEDADES, todas.size)
+        val lista = if (curso == null) todas else todas.filter {
+            it.idCurso == curso.idCurso || (it.mensaje != null && esDeMateria(it.mensaje, curso))
+        }
+        layoutNovedades.removeAllViews()
+        seccionNovedades.visibility = if (lista.isEmpty()) View.GONE else View.VISIBLE
+        txtTituloNovedades.text = "NOVEDADES DESDE TU ÚLTIMA VISITA · ${lista.size}"
+        val ctx = requireContext()
+        lista.take(MAX_NOVEDADES).forEach { n ->
+            val a = n.actividad
+            when (n.tipo) {
+                com.pako.eminus4.notificaciones.Novedades.Tipo.CALIFICADA,
+                com.pako.eminus4.notificaciones.Novedades.Tipo.RECALIFICADA -> {
+                    val act = a!!.activity
+                    val cal = act.calificacion ?: 0.0
+                    val max = act.calificacionMax
+                    val nota = "${ActividadCardBinder.formatoNota(cal)}/${ActividadCardBinder.formatoNota(max)}"
+                    val nueva = n.tipo == com.pako.eminus4.notificaciones.Novedades.Tipo.CALIFICADA
+                    agregarFila(layoutNovedades, R.drawable.ic_star, R.color.badge_success_text,
+                        if (nueva) "Te calificaron: ${act.nombre}" else "Cambió tu calificación: ${act.nombre}",
+                        if (nueva) a.courseName else "${a.courseName} · antes ${ActividadCardBinder.formatoNota(n.antes ?: 0.0)}",
+                        nota, ContextCompat.getColor(ctx, if (cal >= max * 0.6) R.color.badge_success_text else R.color.badge_error_text)
+                    ) { ActividadCardBinder.abrirDetalle(ctx, a) }
+                }
+                com.pako.eminus4.notificaciones.Novedades.Tipo.TAREA_NUEVA -> {
+                    val act = a!!.activity
+                    agregarFila(layoutNovedades, R.drawable.ic_assignment, R.color.brand_uv_green,
+                        "Nueva actividad: ${act.nombre}",
+                        "${a.courseName} · ${Plazos.plazo(act.terminoMillis).texto.replaceFirstChar { it.lowercase() }}",
+                        null, null
+                    ) { ActividadCardBinder.abrirDetalle(ctx, a) }
+                }
+                com.pako.eminus4.notificaciones.Novedades.Tipo.EXAMEN_NUEVO -> {
+                    val e = n.examen!!
+                    agregarFila(layoutNovedades, R.drawable.ic_quiz, R.color.brand_uv_green,
+                        "Nuevo examen: ${e.titulo}",
+                        "${e.nombreCurso} · ${Plazos.plazo(Plazos.parseIso(e.fechaTermino)).texto.replace("Vence", "cierra").replace("Venció", "cerró")}",
+                        null, null
+                    ) { ExamsActivity.start(ctx) }
+                }
+                com.pako.eminus4.notificaciones.Novedades.Tipo.FORO_NUEVO,
+                com.pako.eminus4.notificaciones.Novedades.Tipo.FORO_COMENTARIOS -> {
+                    val f = n.foro!!
+                    val esNuevo = n.tipo == com.pako.eminus4.notificaciones.Novedades.Tipo.FORO_NUEVO
+                    agregarFila(layoutNovedades, R.drawable.ic_forum, R.color.badge_info_text,
+                        if (esNuevo) "Nuevo foro: ${f.titulo}" else f.titulo,
+                        f.nombreCurso,
+                        if (esNuevo) null else "+${n.cantidad}",
+                        ContextCompat.getColor(ctx, R.color.badge_info_text)
+                    ) { com.pako.eminus4.ui.forums.ForumDetailActivity.start(ctx, f.idCurso, f.idForo, f.titulo, f.nombreCurso) }
+                }
+                com.pako.eminus4.notificaciones.Novedades.Tipo.MENSAJE -> {
+                    val m = n.mensaje!!
+                    agregarFila(layoutNovedades, R.drawable.ic_mail, R.color.badge_info_text,
+                        "Mensaje: ${m.titulo?.takeIf { it.isNotBlank() } ?: "(Sin asunto)"}",
+                        m.getNombreRemitente(), null, null
+                    ) { MessageDetailActivity.start(ctx, m.idMensaje) }
+                }
+            }
+        }
+        if (lista.size > MAX_NOVEDADES) {
+            agregarFila(layoutNovedades, R.drawable.ic_inbox, R.color.text_secondary,
+                "y ${lista.size - MAX_NOVEDADES} más", "Marca como visto para ver lo siguiente", null, null) { }
+        }
+    }
+
+    private fun marcarNovedadesVistas() {
+        val r = agenda ?: return
+        com.pako.eminus4.notificaciones.Novedades.marcarVisto(
+            requireContext(),
+            acts = r.actividades.takeIf { agendaOk },
+            exams = examenesDatos.takeIf { examenesOk },
+            foros = forosDatos.takeIf { forosOk },
+            msgs = mensajesDatos.takeIf { mensajesOk }
+        )
+        repintar()
+    }
+
+    // ===================== POR MATERIA =====================
+
+    private data class ResumenMateria(
+        val curso: Course,
+        val porHacer: List<CourseActivityItem>,
+        val examenes: Int,
+        val foros: Int,
+        val mensajes: Int,
+        val esperando: Int
+    ) {
+        val total get() = porHacer.size + examenes + foros + mensajes
+    }
+
+    private fun resumenes(r: AgendaLoader.Resultado): List<ResumenMateria> {
+        val examenesDisp = examenesDisponibles(examenesDatos)
+        val forosNuevos = forosConNovedades(forosDatos)
+        return r.cursos.map { c ->
+            val acts = r.actividades.filter { it.courseId == c.idCurso }
+            ResumenMateria(
+                curso = c,
+                porHacer = acts.filter { it.activity.estadoAlumno.esPendiente }
+                    .sortedBy { it.activity.terminoMillis ?: Long.MAX_VALUE },
+                examenes = examenesDisp.count { it.idCurso == c.idCurso },
+                foros = forosNuevos.count { it.idCurso == c.idCurso },
+                mensajes = mensajesDatos.count { esDeMateria(it, c) },
+                esperando = acts.count { it.activity.estadoAlumno == EstadoAlumno.ESPERANDO }
+            )
+        }.sortedWith(compareByDescending<ResumenMateria> { it.total }
+            .thenBy { it.porHacer.firstOrNull()?.activity?.terminoMillis ?: Long.MAX_VALUE }
+            .thenBy { it.curso.getNombreLimpio() })
+    }
+
+    /** Tarjetas por materia (solo con "Todas"): color, contadores y lo próximo que vence. */
+    private fun pintarPorMateria(r: AgendaLoader.Resultado, visible: Boolean) {
+        layoutPorMateria.removeAllViews()
+        val lista = resumenes(r)
+        seccionPorMateria.visibility = if (visible && lista.size > 1) View.VISIBLE else View.GONE
+        if (!visible) return
+        val ctx = requireContext()
+        val inflater = LayoutInflater.from(ctx)
+        lista.forEach { m ->
+            val card = inflater.inflate(R.layout.item_materia_resumen, layoutPorMateria, false)
+            try {
+                card.findViewById<View>(R.id.viewColorMateria)
+                    .setBackgroundColor(android.graphics.Color.parseColor(m.curso.getColorHexaLimpio()))
+            } catch (_: Exception) { }
+            card.findViewById<TextView>(R.id.txtMateria).text = com.pako.eminus4.util.NombreMateria.bonito(m.curso.getNombreLimpio())
+
+            val grupo = card.findViewById<ViewGroup>(R.id.grupoContadores)
+            fun pildora(texto: String, @ColorRes color: Int, @DrawableRes icono: Int) {
+                grupo.addView(TextView(ctx).apply {
+                    text = texto
+                    textSize = 12f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    setTextColor(ContextCompat.getColor(ctx, color))
+                    setBackgroundResource(R.drawable.bg_status_pill)
+                    val d = resources.displayMetrics.density
+                    setPadding((10 * d).toInt(), (3 * d).toInt(), (10 * d).toInt(), (3 * d).toInt())
+                    iconoInicio(icono, ContextCompat.getColor(ctx, color), tamanoDp = 13, separacionDp = 4)
+                })
+            }
+            fun plural(n: Int, uno: String, varios: String) = "$n ${if (n == 1) uno else varios}"
+            if (m.porHacer.isNotEmpty()) {
+                val urgente = m.porHacer.any { a -> a.activity.terminoMillis?.let { it - System.currentTimeMillis() in 0..HORAS_URGENTE } == true }
+                pildora("${m.porHacer.size} por hacer", if (urgente) R.color.badge_error_text else R.color.badge_warning_text, R.drawable.ic_pending_actions)
+            }
+            if (m.examenes > 0) pildora(plural(m.examenes, "examen", "exámenes"), R.color.brand_uv_green, R.drawable.ic_quiz)
+            if (m.foros > 0) pildora(plural(m.foros, "foro nuevo", "foros nuevos"), R.color.badge_info_text, R.drawable.ic_forum)
+            if (m.mensajes > 0) pildora(plural(m.mensajes, "mensaje", "mensajes"), R.color.badge_info_text, R.drawable.ic_mail)
+            if (m.esperando > 0) pildora("${m.esperando} en revisión", R.color.text_secondary, R.drawable.ic_hourglass_top)
+            if (m.total == 0 && m.esperando == 0) pildora("Al día", R.color.badge_success_text, R.drawable.ic_task_alt)
+
+            m.porHacer.firstOrNull()?.let { prox ->
+                card.findViewById<TextView>(R.id.txtProximo).apply {
+                    visibility = View.VISIBLE
+                    text = "Próximo: ${prox.activity.nombre} · ${Plazos.plazo(prox.activity.terminoMillis).texto.replaceFirstChar { it.lowercase() }}"
+                }
+            }
+            card.setOnClickListener { PendientesActivity.start(ctx, m.curso.idCurso) }
+            layoutPorMateria.addView(card)
+        }
+    }
+
+    // ===================== AGENDA (filtrada) =====================
+
+    private fun pintarSeccionesAgenda(r: AgendaLoader.Resultado, actividades: List<CourseActivityItem>, curso: Course?) {
         val ctx = requireContext()
         val ahora = System.currentTimeMillis()
-        val porHacer = r.actividades
+        val porHacer = actividades
             .filter { it.activity.estadoAlumno.esPendiente }
             .sortedBy { it.activity.terminoMillis ?: Long.MAX_VALUE }
         val urgentes = porHacer.count { a ->
             a.activity.terminoMillis?.let { it - ahora in 0..HORAS_URGENTE } == true
         }
         val enEquipo = porHacer.count { it.activity.esPorEquipos }
-        val esperando = r.actividades.count { it.activity.estadoAlumno == EstadoAlumno.ESPERANDO }
+        val esperando = actividades.count { it.activity.estadoAlumno == EstadoAlumno.ESPERANDO }
+        val enMateria = curso?.let { " en ${com.pako.eminus4.util.NombreMateria.bonito(it.getNombreLimpio())}" } ?: ""
 
         // ---- Resumen ----
         val sinDatos = r.cursos.isEmpty() && r.actividades.isEmpty()
+        layoutResumenStats.visibility = if (sinDatos) View.GONE else View.VISIBLE
+        layoutResumenEstado.visibility = if (sinDatos) View.VISIBLE else View.GONE
+        txtResumenProximo.visibility = if (sinDatos) View.GONE else View.VISIBLE
+        if (!sinDatos) {
+            fun numero(v: View, n: Int, colorSiHay: Int) {
+                v.findViewById<TextView>(R.id.txtStatNumero).apply {
+                    text = "$n"
+                    setTextColor(ContextCompat.getColor(ctx, if (n > 0) colorSiHay else R.color.text_tertiary))
+                }
+            }
+            numero(statPorHacer, porHacer.size, R.color.badge_warning_text)
+            numero(statUrgentes, urgentes, R.color.badge_error_text)
+            numero(statRevision, esperando, R.color.badge_info_text)
+            val prox = porHacer.firstOrNull()
+            txtResumenProximo.text = when {
+                prox != null -> "Lo próximo: ${prox.activity.nombre} · ${Plazos.plazo(prox.activity.terminoMillis).texto.replaceFirstChar { it.lowercase() }}"
+                else -> "Estás al día: no tienes entregas pendientes."
+            } + when {
+                r.sesionExpirada -> "\nSesión caducada: puede faltar información."
+                r.cursosConError > 0 || r.desdeCache -> "\nSin conexión: puede faltar información."
+                else -> ""
+            }
+            txtResumenProximo.setOnClickListener {
+                if (prox != null) ActividadCardBinder.abrirDetalle(ctx, prox) else PendientesActivity.start(ctx)
+            }
+            cardResumen.strokeColor = ContextCompat.getColor(ctx, when {
+                urgentes > 0 -> R.color.badge_error_text
+                porHacer.isNotEmpty() -> R.color.badge_warning_text
+                else -> R.color.badge_success_text
+            })
+        }
         when {
             sinDatos && (r.sesionExpirada || r.desdeCache) -> {
                 ponerIconoResumen(R.drawable.ic_cloud_off, R.color.text_secondary)
@@ -260,14 +560,15 @@ class NotificationsFragment : Fragment() {
             porHacer.isEmpty() -> {
                 ponerIconoResumen(R.drawable.ic_task_alt, R.color.badge_success_text)
                 txtResumenTitulo.text = "Estás al corriente"
-                txtResumenDetalle.text = "No tienes entregas pendientes en tus cursos activos."
+                txtResumenDetalle.text = if (curso == null) "No tienes entregas pendientes en tus cursos activos."
+                                         else "No tienes entregas pendientes$enMateria."
                 cardResumen.strokeColor = ContextCompat.getColor(ctx, R.color.badge_success_text)
             }
             else -> {
                 val n = porHacer.size
                 if (urgentes > 0) ponerIconoResumen(R.drawable.ic_local_fire_department, R.color.badge_error_text)
                 else ponerIconoResumen(R.drawable.ic_pending_actions, R.color.badge_warning_text)
-                txtResumenTitulo.text = "Tienes $n por hacer"
+                txtResumenTitulo.text = "Tienes $n por hacer$enMateria"
                 val partes = mutableListOf<String>()
                 if (urgentes > 0) {
                     partes += "$urgentes vence${if (urgentes > 1) "n" else ""} en los próximos 3 días"
@@ -282,14 +583,12 @@ class NotificationsFragment : Fragment() {
                 )
             }
         }
-        if (!sinDatos && (r.sesionExpirada || r.cursosConError > 0 || r.desdeCache)) {
+        if (sinDatos && (r.sesionExpirada || r.cursosConError > 0 || r.desdeCache)) {
             txtResumenDetalle.append(
                 if (r.sesionExpirada) "\nSesión caducada: puede faltar información."
                 else "\nSin conexión: puede faltar información."
             )
         }
-
-        ponerContador(badgeAccesoActividades, porHacer.size)
 
         // ---- Por hacer ----
         layoutPorHacer.removeAllViews()
@@ -309,7 +608,7 @@ class NotificationsFragment : Fragment() {
         }
 
         // ---- Calificaciones recientes ----
-        val recientes = r.actividades
+        val recientes = actividades
             .filter { it.activity.calificacion != null }
             .mapNotNull { a -> Plazos.parseIso(a.activity.fechaRevision)?.let { a to it } }
             .filter { ahora - it.second <= DIAS_CALIFICACION_RECIENTE }
@@ -328,24 +627,14 @@ class NotificationsFragment : Fragment() {
                 ContextCompat.getColor(ctx, if (cal >= max * 0.6) R.color.badge_success_text else R.color.badge_error_text)
             ) { ActividadCardBinder.abrirDetalle(ctx, item) }
         }
-
-        // ---- Esperando calificación ----
-        if (esperando > 0) {
-            cardEsperando.visibility = View.VISIBLE
-            txtEsperando.text = if (esperando == 1) "1 entrega esperando calificación"
-                                else "$esperando entregas esperando calificación"
-        } else {
-            cardEsperando.visibility = View.GONE
-        }
     }
 
     // ===================== NOVEDADES =====================
 
-    private fun pintarMensajes(noLeidos: List<MessageItem>) {
+    private fun pintarSeccionMensajes(noLeidos: List<MessageItem>) {
         layoutMensajes.removeAllViews()
         seccionMensajes.visibility = if (noLeidos.isEmpty()) View.GONE else View.VISIBLE
         txtTituloMensajes.text = "MENSAJES SIN LEER · ${noLeidos.size}"
-        ponerContador(badgeAccesoMensajes, noLeidos.size)
 
         val ctx = requireContext()
         noLeidos.take(MAX_FILAS).forEach { m ->
@@ -363,13 +652,8 @@ class NotificationsFragment : Fragment() {
         }
     }
 
-    private fun pintarExamenes(examenes: List<ExamItem>) {
-        val ahora = System.currentTimeMillis()
-        val disponibles = examenes
-            .filter { !it.estaCalificado && !it.estaVencido }
-            .filter { (Plazos.parseIso(it.fechaInicio) ?: 0L) <= ahora }
-            .sortedBy { Plazos.parseIso(it.fechaTermino) ?: Long.MAX_VALUE }
-        ponerContador(badgeAccesoExamenes, disponibles.size)
+    private fun pintarSeccionExamenes(examenes: List<ExamItem>) {
+        val disponibles = examenesDisponibles(examenes)
         layoutExamenes.removeAllViews()
         seccionExamenes.visibility = if (disponibles.isEmpty()) View.GONE else View.VISIBLE
 
@@ -383,10 +667,8 @@ class NotificationsFragment : Fragment() {
         }
     }
 
-    private fun pintarForos(foros: List<ForumItem>) {
-        val conNovedades = foros.filter { it.nuevosComentarios > 0 }
-            .sortedByDescending { it.nuevosComentarios }
-        ponerContador(badgeAccesoForos, conNovedades.size)
+    private fun pintarSeccionForos(foros: List<ForumItem>) {
+        val conNovedades = forosConNovedades(foros)
         layoutForos.removeAllViews()
         seccionForos.visibility = if (conNovedades.isEmpty()) View.GONE else View.VISIBLE
 
@@ -396,7 +678,7 @@ class NotificationsFragment : Fragment() {
                 layoutForos, R.drawable.ic_forum, R.color.badge_info_text, f.titulo, f.nombreCurso,
                 "${f.nuevosComentarios} nuevo${if (f.nuevosComentarios == 1) "" else "s"}",
                 ContextCompat.getColor(ctx, R.color.badge_info_text)
-            ) { ForumsActivity.start(ctx) }
+            ) { com.pako.eminus4.ui.forums.ForumDetailActivity.start(ctx, f.idCurso, f.idForo, f.titulo, f.nombreCurso) }
         }
     }
 
@@ -434,9 +716,8 @@ class NotificationsFragment : Fragment() {
         imgResumen.imageTintList = ContextCompat.getColorStateList(requireContext(), color)
     }
 
-    /** Contador rojo sobre un acceso rápido; se oculta en 0. */
-    private fun ponerContador(badge: TextView, n: Int) {
-        badge.visibility = if (n > 0) View.VISIBLE else View.GONE
-        badge.text = if (n > 99) "99+" else n.toString()
+    /** Publica un contador en la navegación (menú lateral / ícono de Mensajes). */
+    private fun ponerContador(tipo: MainActivity.Contador, n: Int) {
+        (activity as? MainActivity)?.ponerContador(tipo, n)
     }
 }
