@@ -32,7 +32,7 @@
 
 ## 🧱 REFACTOR A MVVM (rama `refactor`, carpeta `Desktop/SS/Lumen-Refactor`, nov-2026)
 
-Respaldo previo: rama `respaldo-v2.12-pre-refactor` (commit 5e25d0a). Sin push. Releases solo salen con tag `v*`.
+Respaldo previo: rama `respaldo-v2.12-pre-refactor` (commit 5e25d0a, solo local). Refactor publicado en v2.12.0. Releases solo salen con tag `v*`.
 
 **Hecho (cada etapa compilada, con pruebas y probada en el celular):**
 - **Base:** `core/AppError` (SessionExpired, Network, Server(code), FileTooLarge, MissingData, Parsing) + `isSessionExpired()`/`isNetworkError()` + `resultOf {}` (no se traga la cancelación). `data/local/SessionStore` (antes `core/SessionManager`, mismas llaves). `di/AppContainer`. `data/remote/eminus/EminusClientFactory` (token + cookies + encabezados en un solo lugar; también el cliente de Coil). `EminusHttp` (suspend, nunca registra cuerpos de respuesta). Se quitaron logs con datos personales (cuerpos, nombre, payload de sesión con token).
@@ -158,7 +158,8 @@ Respaldo previo: rama `respaldo-v2.12-pre-refactor` (commit 5e25d0a). Sin push. 
 - ✅ **Entrega real de archivos (v2.6.0, `ActivityDetailActivity.enviarEntrega`)** — ver sección 5b. **Validada en vivo el 16-nov-2026** (caso "entrega existente": `adjuntarEntrega` 200 + `InsertaActividadEntrega` 200; el archivo aparece, `idEstado` sigue en 1 y el `descEntrega` HTML original se conserva). Falta probar en vivo el caso "sin entrega previa" (creación de borrador).
 - ✅ **Actualización automática** (`AppUpdater.kt`): consulta GitHub Releases al abrir `MainActivity` (silencioso) y desde Perfil (manual).
 
-### 🚀 Checklist de la PRÓXIMA PUBLICACIÓN (v2.12.0 "Lumen") — solo cuando el usuario lo ordene
+### ✅ v2.12.0 "Lumen" PUBLICADA (23-nov-2026): repo renombrado a PakoFX/Lumen, main/dev-v2 = c859aa9, tag v2.12.0, release con Lumen.apk; `releases/latest` responde por el nombre nuevo y el viejo.
+### Checklist usado (referencia para próximas versiones)
 1. Renombrar el repo en GitHub: `gh repo rename Lumen` (PakoFX/Bodrio-Nus → PakoFX/Lumen). GitHub redirige el nombre viejo: las apps v2.8.1 siguen recibiendo actualizaciones. **Nunca volver a crear un repo llamado `Bodrio-Nus`** (rompería la redirección).
 2. `AppUpdater.GITHUB_REPO = "PakoFX/Lumen"` y `git remote set-url origin https://github.com/PakoFX/Lumen.git`.
 3. Revisar que `Changelog.kt` tenga la entrada de la versión y que `versionName` coincida.
