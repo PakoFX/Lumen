@@ -10,8 +10,8 @@ android {
         applicationId = "com.pako.eminus4"
         minSdk = 24
         targetSdk = 35
-        versionCode = 21
-        versionName = "2.12.0"
+        versionCode = 22
+        versionName = "2.12.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

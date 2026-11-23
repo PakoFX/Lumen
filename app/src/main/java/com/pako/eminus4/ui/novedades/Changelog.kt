@@ -15,6 +15,10 @@ object Changelog {
     data class Version(val version: String, val fecha: String, val puntos: List<Punto>)
 
     val versiones = listOf(
+        Version("2.12.1", "Noviembre 2026", listOf(
+            Punto(R.drawable.ic_rocket_launch, "Mejoras internas",
+                "La app quedó más ordenada por dentro: carga más estable y menos errores al perder la conexión."),
+        )),
         Version("2.12.0", "Noviembre 2026", listOf(
             Punto(R.drawable.ic_rocket_launch, "Ahora nos llamamos Lumen",
                 "Bodrio-Nus cambia de nombre e ícono. Es la misma app, con todo lo que ya tenías."),
