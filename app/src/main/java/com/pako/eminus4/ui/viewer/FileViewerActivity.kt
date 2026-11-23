@@ -20,7 +20,15 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.pako.eminus4.appContainer
+import kotlinx.coroutines.launch
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -32,8 +40,6 @@ import coil.load
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -58,7 +64,9 @@ class FileViewerActivity : AppCompatActivity() {
         }
     }
 
-    private lateinit var apiClient: EminusApiClient
+    private val viewModel: FileViewerViewModel by viewModels {
+        viewModelFactory { initializer { FileViewerViewModel(appContainer.fileRepository) } }
+    }
     private var fileUrl: String = ""
     private var fileName: String = ""
     private var fileSize: String? = null
@@ -103,8 +111,6 @@ class FileViewerActivity : AppCompatActivity() {
             finish()
             return
         }
-
-        apiClient = EminusApiClient(SessionManager(this))
 
         inicializarVistas()
         prepararArchivo()
@@ -232,28 +238,25 @@ class FileViewerActivity : AppCompatActivity() {
     private fun prepararArchivo() {
         ocultarTodosLosContenedores()
         layoutLoading.visibility = View.VISIBLE
-
-        // Nombre seguro para caché evitando caracteres no válidos
-        val sanitized = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        val cacheFolder = File(cacheDir, "temp_docs")
-        if (!cacheFolder.exists()) cacheFolder.mkdirs()
-        val targetFile = File(cacheFolder, sanitized)
-
-        if (targetFile.exists() && targetFile.length() > 0) {
-            localFile = targetFile
-            renderizarArchivo(targetFile)
-            return
-        }
-
-        apiClient.downloadFile(fileUrl, targetFile) { result ->
-            layoutLoading.visibility = View.GONE
-            result.onSuccess { downloadedFile ->
-                localFile = downloadedFile
-                renderizarArchivo(downloadedFile)
-            }.onFailure { error ->
-                mostrarError("No se pudo cargar el archivo: ${error.localizedMessage}")
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.state.collect { state ->
+                    when (state) {
+                        FileViewerState.Loading -> layoutLoading.visibility = View.VISIBLE
+                        is FileViewerState.Ready -> if (localFile != state.file) {
+                            layoutLoading.visibility = View.GONE
+                            localFile = state.file
+                            renderizarArchivo(state.file)
+                        }
+                        is FileViewerState.Failed -> {
+                            layoutLoading.visibility = View.GONE
+                            mostrarError(state.message)
+                        }
+                    }
+                }
             }
         }
+        viewModel.load(fileUrl, fileName)
     }
 
     private fun renderizarArchivo(file: File) {

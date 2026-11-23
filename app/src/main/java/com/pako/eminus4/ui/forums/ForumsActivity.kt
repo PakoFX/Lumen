@@ -9,11 +9,17 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.text.HtmlCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
@@ -23,16 +29,16 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
+import com.pako.eminus4.appContainer
 import com.pako.eminus4.data.model.ForumItem
+import com.pako.eminus4.data.repository.ForumRepository
+import com.pako.eminus4.ui.common.SubjectBlocksState
 import com.pako.eminus4.util.iconoInicio
-import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.launch
 
 /**
- * Foros agrupados por materia (solo materias que tienen foros), con filtros:
- *  - Estado: Abiertos (predeterminado) / Con aportes nuevos / Todos.
- *  - Materia: "Todas las materias" o una en particular (con su número de foros).
+ * Foros agrupados por materia: un bloque por materia (activas o pasadas) que se despliega al tocarlo.
+ * Solo dibuja el estado; cargar y agrupar vive en [ForumsViewModel] / [ForumBlocks].
  */
 class ForumsActivity : AppCompatActivity() {
 
@@ -42,44 +48,39 @@ class ForumsActivity : AppCompatActivity() {
         }
     }
 
-
-    private lateinit var apiClient: EminusApiClient
+    private val viewModel: ForumsViewModel by viewModels {
+        viewModelFactory { initializer { ForumsViewModel(appContainer.forumRepository) } }
+    }
 
     private lateinit var chipGroupFilter: ChipGroup
+    private lateinit var chipActive: Chip
+    private lateinit var chipPast: Chip
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var recyclerForums: RecyclerView
     private lateinit var layoutEmpty: LinearLayout
     private lateinit var txtEmptyTitle: TextView
     private lateinit var txtEmptySubtitle: TextView
-
-    private val allForums = mutableListOf<ForumItem>()
     private lateinit var adapter: ForumsAdapter
-    /** Materias desplegadas (bloques abiertos). */
-    private val abiertos = mutableSetOf<Long>()
-    private var eligioFiltro = false
-    private var cursosPorId: Map<Long, com.pako.eminus4.data.model.Course> = emptyMap()
+    private var renderedPast: Boolean? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_forums)
-
-        apiClient = EminusApiClient(SessionManager(this))
-
-        inicializarVistas()
-        cargarForos()
+        bindViews()
+        observe()
     }
 
-    private fun inicializarVistas() {
+    private fun bindViews() {
         val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
-        val appBarLayout = findViewById<View>(R.id.appBarLayout)
-        ViewCompat.setOnApplyWindowInsetsListener(appBarLayout) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(0, systemBars.top, 0, 0)
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.appBarLayout)) { v, insets ->
+            v.setPadding(0, insets.getInsets(WindowInsetsCompat.Type.systemBars()).top, 0, 0)
             insets
         }
         toolbar.setNavigationOnClickListener { finish() }
 
         chipGroupFilter = findViewById(R.id.chipGroupFilter)
+        chipActive = findViewById(R.id.chipActivas)
+        chipPast = findViewById(R.id.chipPasadas)
         swipeRefresh = findViewById(R.id.swipeRefresh)
         recyclerForums = findViewById(R.id.recyclerForums)
         layoutEmpty = findViewById(R.id.layoutEmpty)
@@ -87,114 +88,45 @@ class ForumsActivity : AppCompatActivity() {
         txtEmptySubtitle = findViewById(R.id.txtEmptySubtitle)
 
         swipeRefresh.setColorSchemeColors(ContextCompat.getColor(this, R.color.brand_uv_green))
-        swipeRefresh.setOnRefreshListener { cargarForos() }
+        swipeRefresh.setOnRefreshListener { viewModel.load() }
 
         // El foro se lee y se participa dentro de la app
         adapter = ForumsAdapter({ forum ->
             ForumDetailActivity.start(this, forum.idCurso, forum.idForo, forum.titulo, forum.nombreCurso)
-        }, { id -> alternarBloque(id) })
+        }, viewModel::toggle)
         recyclerForums.layoutManager = LinearLayoutManager(this)
         recyclerForums.adapter = adapter
 
-        chipGroupFilter.setOnCheckedStateChangeListener { _, _ -> aplicarFiltro(alInicio = true) }
+        chipGroupFilter.setOnCheckedStateChangeListener { _, _ ->
+            val past = chipPast.isChecked
+            if (past != viewModel.state.value.showPast) viewModel.showPast(past)
+        }
     }
 
-    private fun cargarForos() {
-        swipeRefresh.isRefreshing = true
-
-        apiClient.getAllCourses { result ->
-            result.onSuccess { allCourses ->
-                // Solo cursos que pueden tener foros (vigentes o con foros registrados)
-                val courses = allCourses.filter { it.isActivo() || it.foros > 0 }
-                cursosPorId = allCourses.associateBy { it.idCurso }
-                if (courses.isEmpty()) {
-                    swipeRefresh.isRefreshing = false
-                    allForums.clear()
-                    aplicarFiltro()
-                    return@onSuccess
-                }
-
-                val nuevos = mutableListOf<ForumItem>()
-                val pendingRequests = AtomicInteger(courses.size)
-                for (c in courses) {
-                    apiClient.getForums(c.idCurso) { forumResult ->
-                        forumResult.onSuccess { forums ->
-                            for (f in forums) {
-                                f.idCurso = c.idCurso
-                                f.nombreCurso = c.getNombreLimpio()
-                                f.cursoActivo = c.isActivo()
-                            }
-                            synchronized(nuevos) { nuevos.addAll(forums) }
-                        }
-                        if (pendingRequests.decrementAndGet() == 0) {
-                            swipeRefresh.isRefreshing = false
-                            allForums.clear()
-                            allForums.addAll(nuevos)
-                            aplicarFiltro()
-                        }
-                    }
-                }
-            }.onFailure { error ->
-                swipeRefresh.isRefreshing = false
-                Toast.makeText(this, "Error al cargar cursos: ${error.localizedMessage}", Toast.LENGTH_SHORT).show()
+    private fun observe() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { viewModel.state.collect(::render) }
+                launch { viewModel.errors.collect { Toast.makeText(this@ForumsActivity, it, Toast.LENGTH_SHORT).show() } }
             }
         }
     }
 
-    private fun alternarBloque(idCurso: Long) {
-        if (!abiertos.add(idCurso)) abiertos.remove(idCurso)
-        aplicarFiltro()
-    }
+    private fun render(state: SubjectBlocksState<ForumRepository.Loaded>) {
+        swipeRefresh.isRefreshing = state.loading
+        val blocks = ForumsViewModel.blocksOf(state)
+        chipActive.text = "Materias activas · ${blocks.activeSubjects}"
+        chipPast.text = "Materias pasadas · ${blocks.pastSubjects}"
+        if (chipPast.isChecked != state.showPast) (if (state.showPast) chipPast else chipActive).isChecked = true
 
-    private fun esActiva(idCurso: Long) = cursosPorId[idCurso]?.isActivo() ?: true
+        val sectionChanged = renderedPast != state.showPast
+        renderedPast = state.showPast
+        adapter.submitList(blocks.rows) { if (sectionChanged) recyclerForums.scrollToPosition(0) }
 
-    /** Bloques por materia (activas o pasadas); al tocar uno se despliegan sus foros. */
-    private fun aplicarFiltro(alInicio: Boolean = false) {
-        val pasadas = chipGroupFilter.checkedChipId == R.id.chipPasadas
-        val porMateria = allForums.groupBy { it.idCurso }
-        val nActivas = porMateria.keys.count { esActiva(it) }
-        // La primera vez: si no hay nada en materias activas pero sí en pasadas, abrir en pasadas
-        if (!eligioFiltro && !pasadas && nActivas == 0 && porMateria.isNotEmpty()) {
-            eligioFiltro = true
-            findViewById<Chip>(R.id.chipPasadas).isChecked = true   // vuelve a llamar a aplicarFiltro
-            return
-        }
-        if (porMateria.isNotEmpty()) eligioFiltro = true
-        findViewById<Chip>(R.id.chipActivas).text = "Materias activas · $nActivas"
-        findViewById<Chip>(R.id.chipPasadas).text = "Materias pasadas · ${porMateria.size - nActivas}"
-
-        val grupos = porMateria.filter { (id, _) -> esActiva(id) != pasadas }.toList()
-            .sortedWith(compareByDescending<Pair<Long, List<ForumItem>>> { g -> g.second.sumOf { it.nuevosComentarios } }
-                .thenByDescending { g -> g.second.count { it.estaAbierto() } }
-                .thenBy { it.second.first().nombreCurso })
-        val filas = mutableListOf<FilaForo>()
-        grupos.forEach { (idCurso, foros) ->
-            val nuevos = foros.count { it.nuevosComentarios > 0 }
-            val abiertosForo = foros.count { it.estaAbierto() }
-            val abierto = idCurso in abiertos || grupos.size == 1
-            val resumen = listOfNotNull(
-                "${foros.size} foro${if (foros.size == 1) "" else "s"}",
-                if (abiertosForo > 0) "$abiertosForo abierto${if (abiertosForo == 1) "" else "s"}" else null
-            ).joinToString(" · ")
-            filas += FilaForo.Encabezado(com.pako.eminus4.ui.common.DatosBloque(
-                idCurso, foros.first().nombreCurso, resumen, cursosPorId[idCurso]?.getColorHexaLimpio(), abierto,
-                aviso = if (nuevos > 0) "$nuevos con novedades" else null,
-                avisoColor = R.color.badge_info_text))
-            if (abierto) foros.sortedWith(compareByDescending<ForumItem> { it.nuevosComentarios }
-                .thenByDescending { it.estaAbierto() }
-                .thenBy { it.titulo })
-                .forEach { filas += FilaForo.Foro(it) }
-        }
-
-        adapter.submitList(filas) { if (alInicio) recyclerForums.scrollToPosition(0) }
-        layoutEmpty.visibility = if (filas.isEmpty()) View.VISIBLE else View.GONE
-        if (pasadas) {
-            txtEmptyTitle.text = "Sin foros de materias pasadas"
-            txtEmptySubtitle.text = "Tus materias anteriores no tienen foros."
-        } else {
-            txtEmptyTitle.text = "No hay foros"
-            txtEmptySubtitle.text = "Tus materias de este periodo no tienen foros de discusión."
-        }
+        layoutEmpty.visibility = if (blocks.rows.isEmpty() && !state.loading) View.VISIBLE else View.GONE
+        txtEmptyTitle.text = if (state.showPast) "Sin foros de materias pasadas" else "No hay foros"
+        txtEmptySubtitle.text = if (state.showPast) "Tus materias anteriores no tienen foros."
+        else "Tus materias de este periodo no tienen foros de discusión."
     }
 }
 

@@ -2,7 +2,7 @@ package com.pako.eminus4.notificaciones
 
 import android.content.Context
 import com.google.gson.Gson
-import com.pako.eminus4.core.SessionManager
+import com.pako.eminus4.data.local.SessionStore
 import com.pako.eminus4.data.model.CourseActivityItem
 import com.pako.eminus4.data.model.ExamItem
 import com.pako.eminus4.data.model.ForumItem
@@ -42,7 +42,7 @@ object Novedades {
     // serializeNulls: sin esto Gson descarta las actividades sin calificar (valor null) y vuelven a salir como "nuevas"
     private val gson = com.google.gson.GsonBuilder().serializeNulls().create()
     private fun prefs(ctx: Context) = ctx.applicationContext.getSharedPreferences("novedades", Context.MODE_PRIVATE)
-    private fun claveFoto(ctx: Context) = "foto_" + (SessionManager(ctx).getMatriculaSesion() ?: "sin_cuenta")
+    private fun claveFoto(ctx: Context) = "foto_" + (SessionStore(ctx).getSessionStudentId() ?: "sin_cuenta")
 
     private fun leer(ctx: Context): Foto =
         prefs(ctx).getString(claveFoto(ctx), null)?.let {

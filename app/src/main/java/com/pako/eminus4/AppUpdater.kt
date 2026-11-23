@@ -23,7 +23,7 @@ import kotlin.concurrent.thread
 
 object AppUpdater {
 
-    private const val GITHUB_REPO = "PakoFX/Bodrio-Nus"
+    private const val GITHUB_REPO = "PakoFX/Lumen"
     private const val LATEST_RELEASE_API = "https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
     var pendingApkToInstall: File? = null

@@ -10,7 +10,7 @@
 ## 🚨 REGLAS CRÍTICAS Y NO NEGOCIABLES
 
 1. **NO HACER COMMITS NI PUSH HASTA QUE EL USUARIO LO ORDENE EXPLÍCITAMENTE.** Todo el trabajo se mantiene en local (`dev-v2`).
-2. **NO INTRODUCIR RETROFIT, VIEWMODEL NI LIVEDATA.** La arquitectura es deliberadamente directa: OkHttp nativo con `SessionManager`, llamadas asíncronas con callbacks o corrutinas y pintado en hilo principal con `runOnUiThread` / `Handler(Looper.getMainLooper())`.
+2. **ARQUITECTURA (refactor nov-2026, a petición del usuario: Clean Code, MVVM):** sigue sin Retrofit ni LiveData. Capas: `data/remote` (APIs por área con corrutinas sobre OkHttp) → `data/repository` (orquestan, caché, `Result`) → `domain` (reglas puras, con pruebas) → `ui` (ViewModel con `StateFlow` + Activity/Fragment que solo dibuja). Inyección manual en `di/AppContainer` (`context.appContainer`). Nombres de código en inglés; textos de UI y comentarios en español. Toda función `suspend` debe ser segura en el hilo principal (la red y el JSON van en `Dispatchers.IO`). Ver sección "🧱 REFACTOR".
 3. **NO USAR `WindowCompat.setDecorFitsSystemWindows(false)`:** Rompe los WebViews en Android 14/HyperOS dejando pantalla negra. El manejo de insets se hace exclusivamente mediante `android:fitsSystemWindows="true"` en XML o listeners de `WindowInsetsCompat`.
 4. **`windowSoftInputMode="adjustPan"` EN LOGIN:** Obligatorio en `AndroidManifest.xml` para evitar que el teclado redimensione agresivamente el WebView de login institucional.
 5. **VISUALIZADOR OFFICE FIEL AL DISEÑO ORIGINAL (NO MONOLITO DE TEXTO):**
@@ -27,6 +27,36 @@
     - `SplashActivity` permite entrar a `MainActivity` si hay datos en el teléfono (`hasSession()`), garantizando acceso offline a la credencial digital y cursos guardados.
     - Cuando el token expira, se muestra un banner superior discreto en `MainActivity` (`layoutOfflineBanner`) con el aviso y el botón "Renovar" respetando insets de la barra de estado.
     - Los cursos se guardan en caché local (`saveCachedCourses`) y se pintan de inmediato al abrir la app. Si no hay cursos en caché y la sesión caducó, se muestra el estado informativo adecuado invitando a renovar.
+
+---
+
+## 🧱 REFACTOR A MVVM (rama `refactor`, carpeta `Desktop/SS/Lumen-Refactor`, nov-2026)
+
+Respaldo previo: rama `respaldo-v2.12-pre-refactor` (commit 5e25d0a). Sin push. Releases solo salen con tag `v*`.
+
+**Hecho (cada etapa compilada, con pruebas y probada en el celular):**
+- **Base:** `core/AppError` (SessionExpired, Network, Server(code), FileTooLarge, MissingData, Parsing) + `isSessionExpired()`/`isNetworkError()` + `resultOf {}` (no se traga la cancelación). `data/local/SessionStore` (antes `core/SessionManager`, mismas llaves). `di/AppContainer`. `data/remote/eminus/EminusClientFactory` (token + cookies + encabezados en un solo lugar; también el cliente de Coil). `EminusHttp` (suspend, nunca registra cuerpos de respuesta). Se quitaron logs con datos personales (cuerpos, nombre, payload de sesión con token).
+- **APIs por área** (`data/remote/eminus`): `CoursesApi`, `ActivitiesApi`, `AccountApi`, `ExamsApi`, `ForumsApi`, `MessagesApi`, `CourseSectionsApi`, `JsonMapper`. `data/api/EminusApiClient` quedó como **fachada de transición** con las firmas de callbacks viejas (deprecated): borrarla cuando ninguna pantalla la use.
+- **Dominio** (`domain`): `DueDates` (antes `util/Plazos`), `SubjectName` (antes `NombreMateria`; ahora abrevia palabras cortadas por Eminus, p. ej. "CONSTRUCCI"), `StudentStatus` (antes `EstadoAlumno`; ícono en `ui/common/StudentStatusUi`), `CourseCatalog` (apartados/buscador de cursos), `ExamRules`.
+- **MiUV** (`data/remote/miuv`): `MiuvHttp` (único puente de cookies WebView→OkHttp, no sigue redirecciones fuera de MiUV), `HtmlElements`, `SchedulePageParser`, `SchedulePdfParser`, `CredentialPageParser` (puros, probados con HTML/PDF sintético). Repos `ScheduleRepository` (`updates: SharedFlow` reemplaza el callback estático `alActualizar`) y `CredentialRepository`. Se borraron `HorarioPdf`, `MiuvFoto`, `data/MiuvHttp`.
+- **Pantallas en MVVM:** Cursos (`CoursesViewModel` + `CourseRepository`: varias pantallas comparten UNA petición de cursos, antes salían 3), Exámenes y Foros (base común `ui/common/SubjectBlocksViewModel` para listas "por materia, activas/pasadas"; `ExamRepository`/`ForumRepository` piden en paralelo con `async`; `ExamBlocks`/`ForumBlocks` puros). Mensajería (`MessagesViewModel` + `MessageRepository` + `MessageSections` puro; se quitó la copia de "nombre bonito" y se corrigió que las negritas de "sin leer" quedaban pegadas al reciclar filas). Detalle de foro (`ForumDetailViewModel` + `ForumCommentViews` + `domain/ForumThread`; publicar con adjuntos = `ForumRepository.publish`, que devuelve `Published`/`FilesFailed`). Detalle de mensaje y Redactar (`MessageDetailViewModel`, `ComposeMessageViewModel`, `domain/MessageRules`, `domain/MessageDraft`). `domain/StudentId` (normalizar matrícula; `SessionStore` delega). `util/PublicDownloads` (descarga a Descargas; antes copiada en 2 pantallas). Detalle de materia (`CourseDetailViewModel` con estado por pestaña `TabData` NotLoaded/Loading/Loaded/Failed; `CourseSectionsRepository` pide contenido por unidad y seguimiento+último acceso en paralelo; `SeccionesCurso` ya solo dibuja). Elemento de contenido (`ElementViewModel`: leído, me gusta optimista, comentar).
+- **Pruebas:** 83 (JVM). `org.json` real solo para pruebas; MockWebServer; `kotlinx-coroutines-test`.
+
+**Hecho (21-nov, tarde):** Avisos (`NotificationsViewModel` + `AgendaRepository`, que sustituye a `AgendaLoader` y `AvisosDatos`; la "foto" para Pendientes/Mis actividades vive en `agendaRepository.snapshot`; recordatorios vía interfaz `ReminderUpdater`), Pendientes y Mis actividades leen esa foto; Horario (`ScheduleViewModel` + `domain/ScheduleDay` puro + `data/local/SchedulePrefs`, mismas llaves `horario_fines`). 94 pruebas OK; verificado en el celular (Avisos 6/1/16, Pendientes, contadores del menú, Horario).
+
+**Hecho (22-nov):** Perfil (`ProfileViewModel` + `ProfileRepository` + `domain/ProfileCardBuilder` puro: qué mostrar y cuándo completar la credencial); Detalle de actividad (`ActivityDetailViewModel` + `DeliveryRepository`: verificar→borrador→subir→confirmar y quitar archivo, con `Outcome` Done/Blocked/Failed(step); `domain/DeliveryRules` + `HtmlText.escape` compartido). 104 pruebas OK (incluye flujo de entrega contra MockWebServer). Verificado en el celular sin enviar nada.
+
+**Hecho (22-nov):** Visor de archivos (`FileViewerViewModel` + `FileRepository`: caché `temp_docs`, borra descargas fallidas). 106 pruebas OK. Solo `LoginWebViewActivity` usa ya `EminusApiClient`.
+
+**Hecho (22-nov):** Recordatorios: `data/model/Reminder.kt` (`ReminderSource`/`ScheduledAlarm`/`ReminderType`, con @SerializedName de los nombres viejos), `domain/ReminderPlanner` puro (fuentes y alarmas; mismo código `"clave|momento".hashCode()`), `data/local/ReminderStore` (prefs `recordatorios`, mismas llaves), `notificaciones/ReminderScheduler` (PendingIntent idéntico), `NotifPrefs.toSettings()`. `Recordatorios` queda como fachada + armado de la notificación; el receptor conserva su nombre. 112 pruebas OK (incluye JSON viejo → modelo nuevo). En el celular, instalado encima: 20 alarmas, sin duplicados.
+
+**Hecho (22-nov):** Login (`FreshLoginGate` puro + `AuthRepository` + `CapturedSession`; sin `Thread {}`; ya no registra la respuesta del sondeo, que podía traer el token). **Fachada `EminusApiClient` borrada.** Mapa de archivos actualizado. 116 pruebas OK.
+
+**Decisión:** el paquete `notificaciones` NO se renombra: las alarmas ya programadas en los teléfonos apuntan a `com.pako.eminus4.notificaciones.RecordatorioReceiver` y dejarían de sonar hasta reprogramarse.
+
+**Pendiente:** probar en el celular cerrar sesión → iniciar sesión (lo hace el usuario: escribe su contraseña) y "Volver a cargar mi foto" (MiUV). `MiuvSync` sigue con callbacks/WebView (funciona; candidato a ViewModel si se toca).
+
+**Lecciones:** (1) Android prohíbe red en el hilo principal: leer el cuerpo de OkHttp también es red; las pruebas JVM no lo detectan → probar en el celular. (2) El Python de Microsoft Store a veces no guarda escrituras: verificar con `git diff`/releer. (3) En `launch {}` dentro de una Activity, `this` es la corrutina: usar `this@Activity`.
 
 ---
 
@@ -55,7 +85,7 @@
   - **"Volver a cargar horario"** (Horario: ícono ↻ en la barra; si no hay horario, botón "Cargar mi horario de MiUV"): `HorarioPdf.recargar` → GET `szihorc.aspx` con las cookies de MiUV del WebView, lo lee en Kotlin (`leerHtml`, misma lógica que el JS de `MiuvSync.leerHorario`; `elementosConId` saca el texto de cualquier elemento por id contando anidados — con un regex de `<span>…</span>` simple las materias salían vacías) y completa horas de término con el PDF. Validado en vivo 21-nov-2026: 6 materias/18 sesiones/18 términos, idéntico campo por campo a la carga normal.
   - **Sesión de MiUV caducada en recargas (foto/horario/PDF):** `data/MiuvHttp.traerPagina` NO sigue redirecciones fuera de MiUV: sin sesión, MiUV manda a la portada `uv.mx`, que desde el celular no contesta (antes se esperaban 2×15 s). Redirección al login/fuera → SIN_SESION al instante → diálogo "Entrar otra vez a MiUV".
   - **Bug corregido en "Entrar otra vez a MiUV" (`FORZAR_MIUV`):** si Eminus aún recordaba la sesión, el login entraba sin pedir contraseña y MiUV se omitía ("Sin usuario/contraseña capturados"), así que el respaldo de la foto y del horario nunca funcionaba. Ahora con `FORZAR_MIUV` se limpia la sesión web (no los datos de la app) para que pida y capture usuario/contraseña. Validado en vivo.
-  - Ojo al editar con scripts de Python: dos veces quedaron caracteres de control literales en el código (NUL en `LoginWebViewActivity`, backspace `` en un regex de `HorarioPdf`) que no rompen la compilación pero sí la lógica. Revisar con `grep -P "[ -]"`.
+  - Ojo al editar con scripts de Python: dos veces quedaron caracteres de control literales en el código (NUL en `LoginWebViewActivity`, backspace `\x08` en un regex de `HorarioPdf`) que no rompen la compilación pero sí la lógica. Revisar con `grep -P "[\x00-\x08]"`.
   - **Privacidad y aviso legal:** `allowBackup="false"` + `data_extraction_rules.xml`/`backup_rules.xml` excluyen todo (en Android 12+ `allowBackup=false` NO bloquea la transferencia entre dispositivos; por eso las reglas). Aviso "app no oficial, no afiliada a la UV" fijo bajo el login (`txtAvisoNoOficial`, `@string/aviso_no_oficial_corto`) y al pie de Perfil (`@string/aviso_no_oficial`). Perfil → "Privacidad y aviso legal" (`ui/profile/AvisoPrivacidad.kt`, diálogo); mismo texto en el README (mantenerlos iguales). **Cerrar sesión (a propósito) borra todo lo de la cuenta** con `SessionManager.borrarDatosDeCuenta()` (21-nov-2026): prefs de sesión, credencial y fotos `files/credencial/`, caché `temp_docs`/`entregas`/`adjuntos`, prefs `novedades` y horas de término a mano (`horario_fines`, conserva `mostrar_libre`). Se quedan tema, emojis y filtros. Cuando la sesión **solo caduca** o se **renueva** no se borra nada (`clearSession(preserveCredential = true)`).
   - **Avatar sin foto visible en modo claro:** `ic_nav_profile` es blanco (se perdía sobre fondo claro). Nuevo `drawable/avatar_vacio.xml` (círculo `avatar_vacio_fondo` + silueta `avatar_vacio_silueta`, con modo oscuro) como placeholder/error en barra superior, Perfil, comentarios de foro y miembros.
 - ✅ **Pantalla "Preparando tu cuenta" (login, v2.12.0, `layoutSyncMiuv` en `activity_login.xml`):** aviso destacado (tarjeta ámbar: puede tardar hasta un minuto, qué se trae y que al renovar no se repite) + 4 pasos con ícono (Entrando a MiUV · Programa y datos · Foto y QR · Horario) que avanzan con `MiuvSync.alAvanzar`. **Renovar sesión** (`RENEWAL_ONLY`) ya NO repite MiUV si es la misma cuenta, la credencial se actualizó hace < 7 días y hay horario guardado (`renovacionConDatosRecientes`); antes sí la repetía cuando se escribía la contraseña (si Microsoft recordaba la cuenta, ya se omitía).
@@ -159,15 +189,22 @@
 | Componente | Archivo | Responsabilidad Principal |
 |---|---|---|
 | **Núcleo & Sesión** | `core/Constants.kt` | URLs base de APIs (`eminusapi8`, `eminusapi`, estáticos), endpoints y keys de SharedPreferences. |
-| | `core/SessionManager.kt` | Manejo seguro de SharedPreferences: token JWT, matrícula (`getUserId`), expiración y logout. |
+| | `core/AppError.kt` | Errores tipados (`SessionExpired`, `Network`, `Server`, `FileTooLarge`, `MissingData`, `Parsing`) y `resultOf {}`. |
+| | `data/local/SessionStore.kt` | (ex `SessionManager`) SharedPreferences: token JWT, matrícula, caché de cursos, credencial, horario, logout. Mismas llaves que antes. |
+| **Inyección** | `di/AppContainer.kt` | Crea OkHttp, `EminusHttp`, APIs y repositorios (inyección manual). Acceso: `context.appContainer`. |
 | **Modelos de Datos** | `data/model/Course.kt` | Modelo de curso, thumbnail público, color de tarjeta y estado activo/cerrado. |
 | | `data/model/Activity.kt` | Item de actividad en lista de curso, ponderación, fecha límite y estado. |
 | | `data/model/ActivityDetail.kt` | Detalle completo de actividad, instrucciones HTML, `estaCerrada`, `estaCalificada`. |
 | | `data/model/ActivityAttachment.kt` | Adjunto del profesor (`idArchivosActividades`, `nombreOriginal`, `peso`, `getDownloadUrl`). |
 | | `data/model/StudentDelivery.kt` | Datos de entrega del alumno: `idActividadEntrega`, `descEntrega`, `descRevision`, lista de archivos. |
 | | `data/model/DeliveryAttachment.kt` | Archivo entregado por alumno (`idArchivosEntregas`, `nombreOriginal`, `peso`, `getDownloadUrl`). |
-| **Cliente de Red** | `data/api/EminusApiClient.kt` | OkHttpClient con interceptores Bearer y cookies. Métodos para todas las llamadas API y descarga binaria a caché (`downloadFile`). |
-| **Autenticación** | `ui/auth/LoginWebViewActivity.kt` | WebView SSO institucional, extracción de token en `localStorage` y fix de bucle infinito. |
+| **Red Eminus** | `data/remote/eminus/EminusHttp.kt` | `suspend` GET/POST/PUT/upload/download, main-safe (IO). Nunca registra cuerpos. `EminusClientFactory`: token, cookies, cabeceras. |
+| | `data/remote/eminus/*Api.kt` | Endpoints por área: `CoursesApi`, `ActivitiesApi`, `AccountApi`, `ExamsApi`, `ForumsApi`, `MessagesApi`, `CourseSectionsApi`. |
+| **Red MiUV** | `data/remote/miuv/` | `MiuvHttp` (único puente de cookies del WebView), parsers de horario (HTML y PDF) y credencial. |
+| **Repositorios** | `data/repository/` | `Course`, `Agenda`, `Exam`, `Forum`, `Message`, `CourseSections`, `Delivery`, `File`, `Profile`, `Credential`, `Schedule`, `Auth`. Devuelven `Result<T>`. |
+| **Dominio (puro)** | `domain/` | Reglas sin Android, con pruebas: `DueDates`, `SubjectName`, `StudentStatus`, `ExamRules`, `ScheduleDay`, `ProfileCardBuilder`, `DeliveryRules`, `ReminderPlanner`, `FreshLoginGate`… |
+| **Pantallas** | `ui/<área>/` | Cada pantalla = vista (`Activity`/`Fragment`, solo dibuja) + `XxxViewModel` (`StateFlow` de estado + `Channel` de eventos). |
+| **Autenticación** | `ui/auth/LoginWebViewActivity.kt` | WebView SSO institucional y captura del token en `localStorage`. La decisión de aceptar el token está en `domain/FreshLoginGate`; guardar la sesión en `AuthRepository`. |
 | **Pantalla Principal** | `ui/main/MainActivity.kt` | `DrawerLayout` + barra superior propia + `NavigationView`; fragmentos `Courses`/`Notifications`/`Profile` con hide/show. |
 | **Cursos** | `ui/courses/CoursesFragment.kt` | Lista de cursos (pestaña). La antigua `CoursesActivity` se eliminó en v2.6.0. |
 | **Actualizador** | `AppUpdater.kt` | Busca la última release en GitHub, descarga el APK e invoca el instalador. |
@@ -193,7 +230,7 @@
 | | `data/model/MessageItem.kt` | Item en lista de mensajes: `idMensaje`, `asunto`, `remitente`, `fecha`, `leido`, `tieneAdjuntos`. |
 | | `data/model/MessageDetail.kt` | Detalle completo + `MessageSender`, `MessageRecipient`, `MessageAttachment`. Método `getDownloadUrl(idCurso, idMensaje)`. |
 | | `data/model/CourseActivityItem.kt` | Wrapper de `Activity` con `courseId`, `courseName`, `courseColor`. |
-| **API Client** | `data/api/EminusApiClient.kt` | Métodos añadidos: `getExams(courseId)`, `getForums(courseId)`, `getMessages(folderId)`, `getMessageDetail(messageId)`. |
+| **API** | `data/remote/eminus/ExamsApi.kt`, `ForumsApi.kt`, `MessagesApi.kt` | Exámenes, foros y mensajes (antes en el `EminusApiClient` ya borrado). |
 | **Pantallas** | `ui/courses/AllActivitiesActivity.kt` | Actividades de todos los cursos activos. Filtros: Todas/Pendientes/Entregadas/Calificadas. Click → `ActivityDetailActivity`. |
 | | `ui/exams/ExamsActivity.kt` | Exámenes de todos los cursos con exámenes. Filtros: Todos/Disponibles/Calificados. Click → dialog informativo. |
 | | `ui/forums/ForumsActivity.kt` | Foros de todos los cursos con foros. Filtros: Todos/Con aportes nuevos. Badge de nuevos comentarios. |

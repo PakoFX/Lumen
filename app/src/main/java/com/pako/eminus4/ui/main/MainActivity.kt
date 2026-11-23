@@ -18,8 +18,7 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.navigation.NavigationView
 import com.pako.eminus4.AppUpdater
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
+import com.pako.eminus4.data.local.SessionStore
 import com.pako.eminus4.ui.auth.LoginWebViewActivity
 import com.pako.eminus4.ui.courses.AllActivitiesActivity
 import com.pako.eminus4.ui.courses.CoursesFragment
@@ -39,7 +38,7 @@ class MainActivity : AppCompatActivity() {
     /** Contadores rojos que muestra la navegación (los calcula Avisos al cargar la agenda). */
     enum class Contador { ACTIVIDADES, MENSAJES, FOROS, EXAMENES, NOVEDADES }
 
-    private lateinit var sessionManager: SessionManager
+    private lateinit var sessionStore: SessionStore
     private lateinit var drawerLayout: DrawerLayout
     private lateinit var navigationView: NavigationView
     private lateinit var topBar: View
@@ -59,9 +58,9 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        sessionManager = SessionManager(this)
+        sessionStore = SessionStore(this)
         // Permitir entrada si hay datos guardados (modo offline)
-        if (!sessionManager.hasSession()) {
+        if (!sessionStore.hasSession()) {
             navegarALogin()
             return
         }
@@ -212,8 +211,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (sessionManager.isSessionExpired()) {
-            val tieneCursos = sessionManager.getCachedCourses().isNotEmpty()
+        if (sessionStore.isSessionExpired()) {
+            val tieneCursos = sessionStore.getCachedCourses().isNotEmpty()
             val msg = if (tieneCursos) "Sesión caducada. Mostrando datos guardados." else "Sesión en línea caducada."
             mostrarBannerSesionExpirada(msg)
         } else {
@@ -225,7 +224,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Avatar de Eminus en la barra y nombre en el encabezado del menú. */
     private fun cargarDatosUsuario() {
-        val profile = sessionManager.getUserProfile()
+        val profile = sessionStore.getUserProfile()
         val avatarUrl = profile.getFullAvatarUrl()
         if (!avatarUrl.isNullOrBlank()) {
             imgAvatarBarra.load(avatarUrl) {
@@ -283,7 +282,7 @@ class MainActivity : AppCompatActivity() {
         val intent = Intent(this, LoginWebViewActivity::class.java).apply {
             putExtra("SESSION_EXPIRED", true)
             putExtra("RENEWAL_ONLY", true)
-            val currentToken = sessionManager.getAccessToken()
+            val currentToken = sessionStore.getAccessToken()
             if (!currentToken.isNullOrBlank()) {
                 putExtra("EXPIRED_TOKEN", currentToken)
             }
@@ -292,7 +291,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun notificarSesionExpirada() {
-        sessionManager.setSessionExpired(true)
+        sessionStore.setSessionExpired(true)
         mostrarBannerSesionExpirada("Sesión caducada. Mostrando datos guardados.")
     }
 
@@ -324,11 +323,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun cerrarSesionDirecta() {
-        val expiredToken = sessionManager.getAccessToken()
+        val expiredToken = sessionStore.getAccessToken()
         // No recordar tareas de esta cuenta después de cerrar sesión
         com.pako.eminus4.notificaciones.Recordatorios.borrarTodo(this)
         // Cerrar sesión a propósito: no queda nada de la cuenta (credencial, foto, documentos…)
-        sessionManager.borrarDatosDeCuenta()
+        sessionStore.clearAccountData()
         navegarALogin(sessionExpired = false, isLogout = true, expiredToken = expiredToken)
     }
 

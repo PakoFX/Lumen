@@ -24,8 +24,13 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.pako.eminus4.R
+import com.pako.eminus4.appContainer
+import com.pako.eminus4.data.repository.CapturedSession
+import com.pako.eminus4.domain.FreshLoginGate
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import com.pako.eminus4.core.Constants
-import com.pako.eminus4.core.SessionManager
+import com.pako.eminus4.data.local.SessionStore
 import com.pako.eminus4.data.MiuvSync
 import com.pako.eminus4.ui.main.MainActivity
 
@@ -33,7 +38,7 @@ class LoginWebViewActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
-    private lateinit var sessionManager: SessionManager
+    private lateinit var sessionStore: SessionStore
     private val handler = Handler(Looper.getMainLooper())
     private val gson = Gson()
 
@@ -53,13 +58,9 @@ class LoginWebViewActivity : AppCompatActivity() {
         credUsuario = null
     }
 
-    /**
-     * Tras logout/401 bloqueamos reutilizar el JWT viejo.
-     * Se libera al ver una pantalla de login real O al detectar un token distinto al expirado.
-     */
-    private var waitingForFreshLogin = false
-    private var expiredToken: String? = null
-    private var sawLoginPage = false
+    /** Decide si un token del WebView sale de un inicio de sesión nuevo (ver [FreshLoginGate]). */
+    private lateinit var gate: FreshLoginGate
+    private val auth by lazy { appContainer.authRepository }
 
     /**
      * Si el token "caducado" reaparece sin pasar por el login, se pregunta al servidor si sigue
@@ -67,12 +68,6 @@ class LoginWebViewActivity : AppCompatActivity() {
      */
     private var validandoTokenViejo = false
 
-    /**
-     * Tras limpiar el almacenamiento web se vio localStorage SIN token: cualquier token que
-     * aparezca después tuvo que salir de un login nuevo (el login de Eminus vive dentro de
-     * eminus4/ sin cambiar de URL, así que no siempre se detecta como "pantalla de login").
-     */
-    private var vioStorageSinToken = false
     private var ultimaValidacionMs = 0L
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -80,14 +75,14 @@ class LoginWebViewActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_login)
 
-        sessionManager = SessionManager(this)
+        sessionStore = SessionStore(this)
         progressBar = findViewById(R.id.loginProgressBar)
         webView = findViewById(R.id.loginWebView)
 
         val isSessionExpired = intent.getBooleanExtra("SESSION_EXPIRED", false)
         val isRenewalOnly = intent.getBooleanExtra("RENEWAL_ONLY", false)
         val isLogout = intent.getBooleanExtra("LOGOUT_ACTION", false)
-        expiredToken = intent.getStringExtra("EXPIRED_TOKEN")
+        gate = FreshLoginGate(expiredToken = intent.getStringExtra("EXPIRED_TOKEN"))
 
         configurarWebView()
 
@@ -97,17 +92,16 @@ class LoginWebViewActivity : AppCompatActivity() {
         val forzarMiuv = intent.getBooleanExtra("FORZAR_MIUV", false)
         if (isSessionExpired || isLogout || forzarMiuv) {
             if (!isRenewalOnly) {
-                sessionManager.clearSession(preserveCredential = true)
+                sessionStore.clearSession(preserveCredential = true)
             }
             limpiarSesionWebCompleta {
-                waitingForFreshLogin = true
-                sawLoginPage = false
+                gate.requireFreshLogin()
                 Log.i("EMINUS_LOGIN", "Sesión web limpiada (logout=$isLogout, renewal=$isRenewalOnly). Esperando login fresco.")
                 webView.loadUrl(Constants.EMINUS_LOGIN_URL)
                 iniciarSondeoContinuo()
             }
         } else {
-            waitingForFreshLogin = false
+            gate.allowAnyToken()
             webView.loadUrl(Constants.EMINUS_LOGIN_URL)
             iniciarSondeoContinuo()
         }
@@ -156,12 +150,9 @@ class LoginWebViewActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 progressBar.visibility = View.VISIBLE
                 if (esUrlDeLogin(url)) {
-                    sawLoginPage = true
                     // Ya pasó por el login institucional: a partir de aquí cualquier token nuevo es válido
-                    if (waitingForFreshLogin) {
-                        Log.d("EMINUS_LOGIN", "Pantalla de login detectada ($url) — habilitando captura de token nuevo")
-                        waitingForFreshLogin = false
-                    }
+                    if (gate.waitingForFreshLogin) Log.d("EMINUS_LOGIN", "Pantalla de login detectada — habilitando captura de token nuevo")
+                    gate.onLoginPageSeen()
                 }
                 inyectarInterceptorDeStorage()
                 inyectarCapturaDeCredenciales()
@@ -410,14 +401,14 @@ class LoginWebViewActivity : AppCompatActivity() {
                 val obj = JsonParser.parseString(json).asJsonObject
                 val token = obj.get("token")?.takeIf { !it.isJsonNull }?.asString
                 if (token.isNullOrBlank() || token == "null") {
-                    vioStorageSinToken = true
+                    gate.onEmptyStorageSeen()
                     val keys = obj.get("debugKeys")?.toString() ?: "[]"
                     Log.d("EMINUS_LOGIN", "Sondeo sin token. keys=$keys url=${obj.get("url")}")
                     return@evaluateJavascript
                 }
                 procesarJsonDeSesion(json)
             } catch (e: Exception) {
-                Log.e("EMINUS_LOGIN", "Error parseando sondeo: $result", e)
+                Log.e("EMINUS_LOGIN", "Error parseando sondeo (${result?.length ?: 0} car.)", e)
             }
         }
     }
@@ -444,166 +435,70 @@ class LoginWebViewActivity : AppCompatActivity() {
 
     private fun puedeAceptarToken(token: String): Boolean {
         if (isSessionCaptured) return false
-
-        // Si no estamos esperando login fresco, cualquier token válido sirve
-        if (!waitingForFreshLogin) return true
-
-        // Si el token es distinto al que expiró, el usuario ya re-autenticó
-        // (aunque el IdP no haya pasado por default.aspx)
-        if (!expiredToken.isNullOrBlank() && token != expiredToken) {
-            Log.i("EMINUS_LOGIN", "Token nuevo distinto al expirado — aceptando sin exigir default.aspx")
-            waitingForFreshLogin = false
-            return true
-        }
-
-        // El almacenamiento se vio vacío tras limpiarlo: este token salió de un login nuevo
-        if (vioStorageSinToken) {
-            Log.i("EMINUS_LOGIN", "Token nuevo tras limpiar el almacenamiento — aceptando")
-            waitingForFreshLogin = false
-            return true
-        }
-
-        // Si ya vimos la página de login, también aceptamos
-        if (sawLoginPage) {
-            waitingForFreshLogin = false
-            return true
-        }
-
-        // El mismo token "caducado" reapareció sin pasar por el login: puede que nunca haya
-        // caducado (p. ej. un 401 transitorio). Se valida contra el servidor en segundo plano.
-        if (!expiredToken.isNullOrBlank() && token == expiredToken) {
-            validarTokenEnServidor(token)
-        }
-        Log.d("EMINUS_LOGIN", "Captura bloqueada: esperando login fresco (mismo token viejo o aún no hubo login)")
-        return false
-    }
-
-    /**
-     * Eminus a veces aún no ha escrito nombre/usuario en localStorage cuando aparece el token.
-     * Se completan desde la API para que Perfil, saludo y credencial no queden vacíos.
-     */
-    private fun completarPerfilSiFalta(userName: String?, userId: String?) {
-        if (!userName.isNullOrBlank() && !userId.isNullOrBlank()) return
-        val sm = SessionManager(applicationContext)
-        com.pako.eminus4.data.api.EminusApiClient(sm).getUserProfile { r ->
-            r.onSuccess { p ->
-                sm.saveSession(
-                    accessToken = sm.getAccessToken() ?: return@onSuccess,
-                    userName = p.getNombreCompleto(),
-                    firstName = p.nombre,
-                    userId = p.userId,
-                    userEmail = p.userEmail,
-                    userCampus = p.userCampus,
-                    avatarUrl = p.getFullAvatarUrl()
-                )
-                Log.i("EMINUS_LOGIN", "Perfil completado desde la API")
-            }.onFailure { Log.w("EMINUS_LOGIN", "No se pudo completar el perfil: ${it.message}") }
+        return when (gate.decide(token)) {
+            FreshLoginGate.Decision.ACCEPT -> true
+            FreshLoginGate.Decision.VALIDATE_WITH_SERVER -> { validarTokenEnServidor(token); false }
+            FreshLoginGate.Decision.REJECT -> {
+                Log.d("EMINUS_LOGIN", "Captura bloqueada: esperando login fresco (mismo token viejo o aún no hubo login)")
+                false
+            }
         }
     }
 
-    /** GET al perfil con el token; si responde 200, el token es válido y se acepta. */
+    /** El mismo token "caducado" reapareció sin pasar por el login: se pregunta al servidor si sigue sirviendo. */
     private fun validarTokenEnServidor(token: String) {
         val ahora = System.currentTimeMillis()
         if (validandoTokenViejo || ahora - ultimaValidacionMs < 15_000) return
         validandoTokenViejo = true
         ultimaValidacionMs = ahora
-        Thread {
-            val valido = try {
-                val cliente = okhttp3.OkHttpClient.Builder()
-                    .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                    .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build()
-                val req = okhttp3.Request.Builder()
-                    .url("${Constants.API_GLOBAL_URL}${Constants.ENDPOINT_GET_USER}")
-                    .header("Authorization", "Bearer $token")
-                    .header("Accept", "application/json")
-                    .build()
-                cliente.newCall(req).execute().use { it.code == 200 }
-            } catch (_: Exception) {
-                false
+        lifecycleScope.launch {
+            val valido = auth.isTokenValid(token)
+            validandoTokenViejo = false
+            if (valido && !isSessionCaptured && !isFinishing) {
+                Log.i("EMINUS_LOGIN", "El token marcado como caducado sigue siendo válido: se acepta")
+                gate.onTokenConfirmedValid()
+                verificarToken()
+            } else {
+                Log.d("EMINUS_LOGIN", "El token viejo no es válido: se espera un login nuevo")
             }
-            runOnUiThread {
-                validandoTokenViejo = false
-                if (valido && !isSessionCaptured && !isFinishing) {
-                    Log.i("EMINUS_LOGIN", "El token marcado como caducado sigue siendo válido: se acepta")
-                    waitingForFreshLogin = false
-                    verificarToken()
-                } else {
-                    Log.d("EMINUS_LOGIN", "El token viejo no es válido: se espera un login nuevo")
-                }
-            }
-        }.start()
+        }
     }
 
     private fun procesarJsonDeSesion(jsonStr: String) {
         if (isSessionCaptured || isFinishing) return
-        try {
-            val parsed = unwrapEvaluateJavascriptResult(jsonStr) ?: jsonStr
-            val json = gson.fromJson(parsed, JsonObject::class.java) ?: return
-            val token = json.get("token")?.takeIf { !it.isJsonNull }?.asString
+        val session = CapturedSession.fromJson(unwrapEvaluateJavascriptResult(jsonStr) ?: jsonStr) ?: return
+        if (!puedeAceptarToken(session.token)) return
 
-            if (token.isNullOrBlank() || token == "null") return
-            if (!puedeAceptarToken(token)) return
+        isSessionCaptured = true
+        handler.removeCallbacksAndMessages(null)
+        auth.start(session)
+        // Si Eminus aún no escribió nombre/usuario, completarlos desde la API (no detiene la entrada)
+        appContainer.applicationScope.launch {
+            auth.completeProfileIfMissing(session)
+                ?.onSuccess { Log.i("EMINUS_LOGIN", "Perfil completado desde la API") }
+                ?.onFailure { Log.w("EMINUS_LOGIN", "No se pudo completar el perfil: ${it.message}") }
+        }
+        Log.i("EMINUS_LOGIN", "Sesión detectada y guardada")
 
-            isSessionCaptured = true
-            handler.removeCallbacksAndMessages(null)
-
-            val userName = json.get("userName")?.takeIf { !it.isJsonNull }?.asString
-            val userId = json.get("userId")?.takeIf { !it.isJsonNull }?.asString
-            val userEmail = json.get("userEmail")?.takeIf { !it.isJsonNull }?.asString
-            val userCampus = json.get("userCampus")?.takeIf { !it.isJsonNull }?.asString
-            val avatar = json.get("avatar")?.takeIf { !it.isJsonNull }?.asString
-            val tokenExpiration = json.get("tokenExpiration")?.takeIf { !it.isJsonNull }?.asString
-            val userRoles = json.get("userRoles")?.takeIf { !it.isJsonNull }?.asString
-
-            // Si entra otra persona, su credencial no debe mostrar los datos de la anterior
-            sessionManager.descartarCredencialAjena(userId)
-            com.pako.eminus4.data.AgendaLoader.limpiar()
-
-            sessionManager.saveSession(
-                accessToken = token,
-                userName = userName,
-                userId = userId,
-                userEmail = userEmail,
-                userCampus = userCampus,
-                avatarUrl = avatar,
-                tokenExpiration = tokenExpiration,
-                userRoles = userRoles
-            )
-            sessionManager.setSessionExpired(false)
-            completarPerfilSiFalta(userName, userId)
-
-            Log.i("EMINUS_LOGIN", "¡Sesión detectada y guardada con éxito para $userName!")
-
-            val usuario = credUsuario
-            val clave = credClave
-            credUsuario = null
-            credClave = null   // la propiedad de la clave pasa a MiuvSync, que la borra al terminar
-            if (usuario != null && clave != null && renovacionConDatosRecientes(usuario)) {
+        val usuario = credUsuario
+        val clave = credClave
+        credUsuario = null
+        credClave = null   // la propiedad de la clave pasa a MiuvSync, que la borra al terminar
+        val renovacion = intent.getBooleanExtra("RENEWAL_ONLY", false)
+        val forzarMiuv = intent.getBooleanExtra("FORZAR_MIUV", false)
+        when {
+            usuario != null && clave != null && auth.canSkipMiuv(usuario, renovacion, forzarMiuv) -> {
                 // Renovar la sesión no repite la carga de MiUV si ya hay datos recientes de esta cuenta
                 clave.fill('\u0000')
                 Log.i("EMINUS_LOGIN", "Renovación: datos de MiUV recientes, se omite la sincronización")
                 entrarALaApp()
-            } else if (usuario != null && clave != null) {
-                sincronizarConMiuv(usuario, clave, userName)
-            } else {
+            }
+            usuario != null && clave != null -> sincronizarConMiuv(usuario, clave, session.userName)
+            else -> {
                 Log.i("EMINUS_LOGIN", "Sin usuario/contraseña capturados (sesión recordada): se omite MiUV")
                 entrarALaApp()
             }
-        } catch (e: Exception) {
-            Log.e("EMINUS_LOGIN", "Error decodificando payload de sesión: $jsonStr", e)
-            // Permitir reintentos si falló el parseo
-            isSessionCaptured = false
         }
-    }
-
-    /** Renovación de la MISMA cuenta con credencial y horario de MiUV de hace menos de 7 días. */
-    private fun renovacionConDatosRecientes(usuario: String): Boolean {
-        if (!intent.getBooleanExtra("RENEWAL_ONLY", false)) return false
-        if (intent.getBooleanExtra("FORZAR_MIUV", false)) return false   // "Volver a cargar mi foto"
-        val cred = sessionManager.getStudentCredential() ?: return false
-        val mismaCuenta = cred.getMatriculaOficial() == sessionManager.normalizarMatricula(usuario)
-        val reciente = System.currentTimeMillis() - (cred.actualizadoMiuv ?: 0L) < 7L * 24 * 60 * 60 * 1000
-        return mismaCuenta && reciente && sessionManager.getHorario() != null
     }
 
     /** Pantalla "Preparando tu cuenta": paso actual con reloj, anteriores con palomita. */
@@ -625,7 +520,7 @@ class LoginWebViewActivity : AppCompatActivity() {
     private fun sincronizarConMiuv(usuario: String, clave: CharArray, userName: String?) {
         // El usuario del login es la matrícula: sirve de respaldo si Eminus aún no reportó userId
         val matriculaLogin = usuario
-        sessionManager.descartarCredencialAjena(matriculaLogin)
+        sessionStore.discardForeignCredential(matriculaLogin)
         findViewById<View>(R.id.layoutSyncMiuv).visibility = View.VISIBLE
         pintarPasos(0)
         val sync = MiuvSync(webView, java.io.File(filesDir, "credencial"), usuario, clave)
@@ -633,9 +528,9 @@ class LoginWebViewActivity : AppCompatActivity() {
         sync.iniciar { datos ->
             if (isFinishing || isDestroyed) return@iniciar
             if (datos != null) {
-                sessionManager.aplicarDatosMiuv(datos, userName, matriculaLogin)
+                sessionStore.applyMiuvData(datos, userName, matriculaLogin)
                 // La hora de término de cada clase viene en el PDF de "Imprimir" de MiUV (en segundo plano)
-                if (!datos.horario.isNullOrEmpty()) com.pako.eminus4.data.HorarioPdf.completarEnSegundoPlano(this)
+                if (!datos.horario.isNullOrEmpty()) appContainer.scheduleRepository.completeEndTimesInBackground()
                 Toast.makeText(this, "Credencial actualizada: ${datos.programa}", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "No se pudo leer MiUV; puedes editar tu programa en Perfil.", Toast.LENGTH_LONG).show()

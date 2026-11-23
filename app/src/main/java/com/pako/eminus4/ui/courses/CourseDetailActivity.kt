@@ -8,24 +8,34 @@ import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.widget.NestedScrollView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-import androidx.core.content.ContextCompat
 import coil.load
 import com.google.android.material.appbar.CollapsingToolbarLayout
 import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.tabs.TabLayout
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
-import com.pako.eminus4.util.iconoInicio
+import com.pako.eminus4.appContainer
+import com.pako.eminus4.data.model.Activity
+import com.pako.eminus4.domain.SubjectName
+import kotlinx.coroutines.launch
 
 /**
- * CourseDetailActivity — Muestra el detalle de un curso con su lista de actividades.
- *
- * Recibe los datos del curso por Intent (ID, nombre, color, thumbnail, stats)
- * y carga las actividades de la API de Eminus en segundo plano.
+ * Dentro de una materia: pestañas Actividades · Contenido · Miembros · Seguimiento (como Eminus web).
+ * Solo dibuja [CourseDetailUiState]; cargar vive en [CourseDetailViewModel].
  */
 class CourseDetailActivity : AppCompatActivity() {
 
@@ -40,213 +50,192 @@ class CourseDetailActivity : AppCompatActivity() {
         const val EXTRA_COURSE_DEPENDENCIA = "extra_course_dependencia"
     }
 
-    private lateinit var apiClient: EminusApiClient
-    private lateinit var activityAdapter: ActivityAdapter
+    private val courseId by lazy { intent.getLongExtra(EXTRA_COURSE_ID, -1L) }
+    private val courseName by lazy { intent.getStringExtra(EXTRA_COURSE_NAME) ?: "Curso" }
 
-    private lateinit var collapsingToolbar: CollapsingToolbarLayout
-    private lateinit var toolbar: MaterialToolbar
-    private lateinit var headerBg: View
-    private lateinit var imgThumbnail: ImageView
+    private val viewModel: CourseDetailViewModel by viewModels {
+        viewModelFactory {
+            initializer {
+                CourseDetailViewModel(appContainer.courseSectionsRepository, courseId) {
+                    appContainer.sessionStore.getUserId().orEmpty()
+                }
+            }
+        }
+    }
+
+    private lateinit var activityAdapter: ActivityAdapter
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var rvActivities: RecyclerView
     private lateinit var progressActivities: ProgressBar
     private lateinit var layoutEmpty: View
     private lateinit var txtEmpty: TextView
-    private lateinit var tabs: com.google.android.material.tabs.TabLayout
-    private lateinit var scrollSeccion: androidx.core.widget.NestedScrollView
-    private lateinit var secciones: SeccionesCurso
-    private var courseId = -1L
+    private lateinit var tabs: TabLayout
+    private lateinit var scrollSection: NestedScrollView
+    private lateinit var sections: SeccionesCurso
+    private var shownActivitiesError: String? = null
 
-    /** Al volver de un elemento (leído / me gusta) se refresca el contenido. */
-    private val abrirElemento = registerForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
-    ) { r -> if (r.resultCode == ElementoActivity.RESULT_CAMBIO) secciones.invalidarContenido() }
+    /** Al volver de un elemento (leído / me gusta / comentario) se refresca el contenido. */
+    private val openElementForResult = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == ElementoActivity.RESULT_CAMBIO) viewModel.invalidateContent()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_course_detail)
-
-        val courseId          = intent.getLongExtra(EXTRA_COURSE_ID, -1L)
-        val courseName        = intent.getStringExtra(EXTRA_COURSE_NAME) ?: "Curso"
-        val courseColor       = intent.getStringExtra(EXTRA_COURSE_COLOR) ?: "#00897B"
-        val courseThumbnail   = intent.getStringExtra(EXTRA_COURSE_THUMBNAIL)
-        val numActividades    = intent.getIntExtra(EXTRA_COURSE_ACTIVIDADES, 0)
-        val numForos          = intent.getIntExtra(EXTRA_COURSE_FOROS, 0)
-        val numIntegrantes    = intent.getIntExtra(EXTRA_COURSE_INTEGRANTES, 0)
-
         if (courseId == -1L) {
             finish()
             return
         }
-        this.courseId = courseId
-
-        apiClient = EminusApiClient(SessionManager(this))
-
-        inicializarVistas()
-        configurarHeader(courseName, courseColor, courseThumbnail)
-        configurarRecyclerView()
-        configurarPestanas(numActividades, numIntegrantes)
-        cargarActividades(courseId)
+        bindViews()
+        setUpHeader(courseName, intent.getStringExtra(EXTRA_COURSE_COLOR) ?: "#00897B", intent.getStringExtra(EXTRA_COURSE_THUMBNAIL))
+        setUpActivitiesList()
+        setUpTabs(intent.getIntExtra(EXTRA_COURSE_ACTIVIDADES, 0), intent.getIntExtra(EXTRA_COURSE_INTEGRANTES, 0))
+        observe()
     }
 
-    private fun inicializarVistas() {
-        collapsingToolbar = findViewById(R.id.collapsingToolbar)
-        toolbar           = findViewById(R.id.detailToolbar)
-        headerBg          = findViewById(R.id.detailHeaderBg)
-        imgThumbnail      = findViewById(R.id.imgDetailThumbnail)
-        swipeRefresh      = findViewById(R.id.detailSwipeRefresh)
-        rvActivities      = findViewById(R.id.rvActivities)
+    private fun bindViews() {
+        swipeRefresh = findViewById(R.id.detailSwipeRefresh)
+        rvActivities = findViewById(R.id.rvActivities)
         progressActivities = findViewById(R.id.progressActivities)
-        layoutEmpty       = findViewById(R.id.layoutDetailEmpty)
-        txtEmpty          = findViewById(R.id.txtDetailEmpty)
-        tabs              = findViewById(R.id.tabsCurso)
-        scrollSeccion     = findViewById(R.id.scrollSeccion)
+        layoutEmpty = findViewById(R.id.layoutDetailEmpty)
+        txtEmpty = findViewById(R.id.txtDetailEmpty)
+        tabs = findViewById(R.id.tabsCurso)
+        scrollSection = findViewById(R.id.scrollSeccion)
 
-        // Botón de navegación atrás
+        val toolbar = findViewById<MaterialToolbar>(R.id.detailToolbar)
         setSupportActionBar(toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         toolbar.setNavigationOnClickListener { finish() }
-
-        // Sistema de insets para el AppBar
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(toolbar) { v, insets ->
-            val systemBars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-            v.setPadding(0, systemBars.top, 0, 0)
+        ViewCompat.setOnApplyWindowInsetsListener(toolbar) { v, insets ->
+            v.setPadding(0, insets.getInsets(WindowInsetsCompat.Type.systemBars()).top, 0, 0)
             insets
         }
-
         swipeRefresh.setColorSchemeColors(ContextCompat.getColor(this, R.color.brand_uv_green))
-    }
-
-    private fun configurarHeader(nombre: String, colorHex: String, thumbnailUrl: String?) {
-        collapsingToolbar.title = com.pako.eminus4.util.NombreMateria.bonito(nombre)
-        collapsingToolbar.setContentScrimColor(
-            try { Color.parseColor(colorHex) } catch (_: Exception) { ContextCompat.getColor(this, R.color.brand_uv_green) }
-        )
-
-        try {
-            headerBg.setBackgroundColor(Color.parseColor(colorHex))
-        } catch (_: Exception) {
-            headerBg.setBackgroundColor(ContextCompat.getColor(this, R.color.brand_uv_green))
-        }
-
-        if (!thumbnailUrl.isNullOrBlank()) {
-            imgThumbnail.visibility = View.VISIBLE
-            imgThumbnail.load(thumbnailUrl) { crossfade(true) }
-        }
-    }
-
-    /** Actividades · Contenido · Miembros · Seguimiento (como las secciones de Eminus web). */
-    private fun configurarPestanas(actividades: Int, integrantes: Int) {
-        secciones = SeccionesCurso(this, apiClient, courseId, findViewById(R.id.contenedorSeccion),
-            alTerminar = { swipeRefresh.isRefreshing = false },
-            abrirElemento = { e, unidad ->
-                abrirElemento.launch(ElementoActivity.intent(this, courseId, unidad, e))
-            },
-            abrirActividad = { t, lista ->
-                val conId = lista.filter { it.id > 0 }
-                abrirDetalleActividad(t.id, t.titulo.orEmpty(),
-                    conId.map { it.id }.toLongArray(), conId.map { it.titulo.orEmpty() }.toTypedArray())
-            })
-        listOf(
-            if (actividades > 0) "Actividades $actividades" else "Actividades",
-            "Contenido",
-            if (integrantes > 0) "Miembros $integrantes" else "Miembros",
-            "Seguimiento"
-        ).forEach { tabs.addTab(tabs.newTab().setText(it)) }
-        tabs.addOnTabSelectedListener(object : com.google.android.material.tabs.TabLayout.OnTabSelectedListener {
-            override fun onTabSelected(tab: com.google.android.material.tabs.TabLayout.Tab) = mostrarPestana(tab.position)
-            override fun onTabUnselected(tab: com.google.android.material.tabs.TabLayout.Tab) {}
-            override fun onTabReselected(tab: com.google.android.material.tabs.TabLayout.Tab) {
-                if (tab.position == 0) rvActivities.smoothScrollToPosition(0) else scrollSeccion.smoothScrollTo(0, 0)
-            }
-        })
+        swipeRefresh.setOnRefreshListener { viewModel.reload() }
         // Deslizar para recargar debe respetar la lista que está visible
         swipeRefresh.setOnChildScrollUpCallback { _, _ ->
-            if (tabs.selectedTabPosition == 0) rvActivities.canScrollVertically(-1) else scrollSeccion.canScrollVertically(-1)
+            if (tabs.selectedTabPosition == 0) rvActivities.canScrollVertically(-1) else scrollSection.canScrollVertically(-1)
         }
     }
 
-    /** Detalle de actividad (desde Actividades o desde Seguimiento). */
-    private fun abrirDetalleActividad(id: Long, titulo: String, ids: LongArray, titulos: Array<String>) {
+    private fun setUpHeader(name: String, colorHex: String, thumbnailUrl: String?) {
+        val color = runCatching { Color.parseColor(colorHex) }.getOrDefault(ContextCompat.getColor(this, R.color.brand_uv_green))
+        findViewById<CollapsingToolbarLayout>(R.id.collapsingToolbar).apply {
+            title = SubjectName.displayName(name)
+            setContentScrimColor(color)
+        }
+        findViewById<View>(R.id.detailHeaderBg).setBackgroundColor(color)
+        if (!thumbnailUrl.isNullOrBlank()) {
+            findViewById<ImageView>(R.id.imgDetailThumbnail).apply {
+                visibility = View.VISIBLE
+                load(thumbnailUrl) { crossfade(true) }
+            }
+        }
+    }
+
+    private fun setUpActivitiesList() {
+        activityAdapter = ActivityAdapter { activity ->
+            val list = activityAdapter.currentList
+            openActivityDetail(activity.idActividad, activity.nombre, list.map { it.idActividad }.toLongArray(), list.map { it.nombre }.toTypedArray())
+        }
+        rvActivities.layoutManager = LinearLayoutManager(this)
+        rvActivities.adapter = activityAdapter
+    }
+
+    private fun setUpTabs(activities: Int, members: Int) {
+        sections = SeccionesCurso(this, courseId, { appContainer.sessionStore.getUserId() }, findViewById(R.id.contenedorSeccion),
+            openElement = { e, unit -> openElementForResult.launch(ElementoActivity.intent(this, courseId, unit, e)) },
+            openActivity = { item, list ->
+                val withId = list.filter { it.id > 0 }
+                openActivityDetail(item.id, item.titulo.orEmpty(), withId.map { it.id }.toLongArray(), withId.map { it.titulo.orEmpty() }.toTypedArray())
+            })
+        listOf(
+            if (activities > 0) "Actividades $activities" else "Actividades",
+            "Contenido",
+            if (members > 0) "Miembros $members" else "Miembros",
+            "Seguimiento"
+        ).forEach { tabs.addTab(tabs.newTab().setText(it)) }
+        tabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: TabLayout.Tab) {
+                scrollSection.scrollTo(0, 0)
+                viewModel.select(CourseTab.entries[tab.position])
+            }
+            override fun onTabUnselected(tab: TabLayout.Tab) {}
+            override fun onTabReselected(tab: TabLayout.Tab) {
+                if (tab.position == 0) rvActivities.smoothScrollToPosition(0) else scrollSection.smoothScrollTo(0, 0)
+            }
+        })
+    }
+
+    /** Detalle de actividad (desde Actividades o desde Seguimiento), con la lista para pasar a la anterior/siguiente. */
+    private fun openActivityDetail(id: Long, title: String, ids: LongArray, titles: Array<String>) {
         val index = ids.indexOf(id)
         startActivity(Intent(this, ActivityDetailActivity::class.java).apply {
             putExtra(ActivityDetailActivity.EXTRA_COURSE_ID, courseId)
-            putExtra(ActivityDetailActivity.EXTRA_COURSE_NAME, intent.getStringExtra(EXTRA_COURSE_NAME) ?: "Curso")
+            putExtra(ActivityDetailActivity.EXTRA_COURSE_NAME, courseName)
             putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_ID, id)
-            putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_TITLE, titulo)
+            putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_TITLE, title)
             putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_IDS, ids)
-            putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_TITLES, titulos)
+            putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_TITLES, titles)
             putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_INDEX, if (index >= 0) index else 0)
         })
     }
 
-    private fun seccionDe(pos: Int) = when (pos) {
-        1 -> SeccionesCurso.Seccion.CONTENIDO
-        2 -> SeccionesCurso.Seccion.MIEMBROS
-        else -> SeccionesCurso.Seccion.SEGUIMIENTO
+    private fun observe() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.state.collect(::render) }
+        }
     }
 
-    private fun mostrarPestana(pos: Int, recargar: Boolean = false) {
-        val esActividades = pos == 0
-        rvActivities.visibility = if (esActividades) View.VISIBLE else View.GONE
-        scrollSeccion.visibility = if (esActividades) View.GONE else View.VISIBLE
+    private fun render(state: CourseDetailUiState) {
+        val onActivities = state.tab == CourseTab.ACTIVITIES
+        rvActivities.visibility = if (onActivities) View.VISIBLE else View.GONE
+        scrollSection.visibility = if (onActivities) View.GONE else View.VISIBLE
+        if (!state.refreshing) swipeRefresh.isRefreshing = false
+        if (onActivities) renderActivities(state.activities) else renderSection(state)
+    }
+
+    private fun renderActivities(data: TabData<List<Activity>>) {
+        progressActivities.visibility = if (data is TabData.Loading && !swipeRefresh.isRefreshing && activityAdapter.currentList.isEmpty()) View.VISIBLE else View.GONE
         layoutEmpty.visibility = View.GONE
+        when (data) {
+            is TabData.Loaded -> {
+                activityAdapter.submitList(data.data)
+                if (data.data.isEmpty()) showEmpty("Este curso no tiene actividades registradas")
+            }
+            is TabData.Failed -> {
+                showEmpty("No se pudieron cargar las actividades.\n${data.reason}")
+                if (shownActivitiesError != data.reason) Toast.makeText(this, "Error: ${data.reason}", Toast.LENGTH_SHORT).show()
+                shownActivitiesError = data.reason
+            }
+            else -> Unit
+        }
+    }
+
+    private fun showEmpty(text: String) {
+        layoutEmpty.visibility = View.VISIBLE
+        txtEmpty.text = text
+    }
+
+    private fun renderSection(state: CourseDetailUiState) {
         progressActivities.visibility = View.GONE
-        if (esActividades) {
-            if (recargar || activityAdapter.currentList.isEmpty()) cargarActividades(courseId)
-            else layoutEmpty.visibility = View.GONE
-        } else {
-            scrollSeccion.scrollTo(0, 0)
-            secciones.mostrar(seccionDe(pos), recargar)
-        }
-    }
-
-    private fun configurarRecyclerView() {
-        activityAdapter = ActivityAdapter { actividad ->
-            val actividades = activityAdapter.currentList
-            val index = actividades.indexOfFirst { it.idActividad == actividad.idActividad }
-            val ids    = actividades.map { it.idActividad }.toLongArray()
-            val titles = actividades.map { it.nombre }.toTypedArray()
-
-            val intent = Intent(this, ActivityDetailActivity::class.java).apply {
-                putExtra(ActivityDetailActivity.EXTRA_COURSE_ID, intent.getLongExtra(EXTRA_COURSE_ID, 0L))
-                putExtra(ActivityDetailActivity.EXTRA_COURSE_NAME, intent.getStringExtra(EXTRA_COURSE_NAME) ?: "Curso")
-                putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_ID, actividad.idActividad)
-                putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_TITLE, actividad.nombre)
-                putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_IDS, ids)
-                putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_TITLES, titles)
-                putExtra(ActivityDetailActivity.EXTRA_ACTIVITY_INDEX, if (index >= 0) index else 0)
-            }
-            startActivity(intent)
-        }
-        rvActivities.layoutManager = LinearLayoutManager(this)
-        rvActivities.adapter = activityAdapter
-
-        swipeRefresh.setOnRefreshListener { mostrarPestana(tabs.selectedTabPosition, recargar = true) }
-    }
-
-    private fun cargarActividades(idCurso: Long) {
-        if (!swipeRefresh.isRefreshing) {
-            progressActivities.visibility = View.VISIBLE
-        }
         layoutEmpty.visibility = View.GONE
-
-        apiClient.getActivities(idCurso) { result ->
-            progressActivities.visibility = View.GONE
-            swipeRefresh.isRefreshing = false
-
-            if (tabs.selectedTabPosition != 0) return@getActivities
-            result.onSuccess { actividades ->
-                activityAdapter.submitList(actividades)
-                if (actividades.isEmpty()) {
-                    layoutEmpty.visibility = View.VISIBLE
-                    txtEmpty.text = "Este curso no tiene actividades registradas"
-                }
-            }.onFailure { error ->
-                layoutEmpty.visibility = View.VISIBLE
-                txtEmpty.text = "No se pudieron cargar las actividades.\n${error.localizedMessage}"
-                Toast.makeText(this, "Error: ${error.localizedMessage}", Toast.LENGTH_SHORT).show()
+        when (val data = state.dataOf(state.tab)) {
+            TabData.NotLoaded -> Unit
+            TabData.Loading -> if (!swipeRefresh.isRefreshing) sections.showLoading()
+            is TabData.Failed -> sections.showMessage("${failureTitle(state.tab)}\n${data.reason}")
+            is TabData.Loaded -> when (state.tab) {
+                CourseTab.CONTENT -> (state.content as? TabData.Loaded)?.let { sections.showContent(it.data) }
+                CourseTab.MEMBERS -> (state.members as? TabData.Loaded)?.let { sections.showMembers(it.data) }
+                CourseTab.TRACKING -> (state.tracking as? TabData.Loaded)?.let { sections.showTracking(it.data) }
+                CourseTab.ACTIVITIES -> Unit
             }
         }
+    }
+
+    private fun failureTitle(tab: CourseTab) = when (tab) {
+        CourseTab.CONTENT -> "No se pudo cargar el contenido."
+        CourseTab.MEMBERS -> "No se pudieron cargar los miembros."
+        else -> "No se pudo cargar tu seguimiento."
     }
 }

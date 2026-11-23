@@ -9,10 +9,16 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
@@ -22,19 +28,20 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
+import com.pako.eminus4.appContainer
+import com.pako.eminus4.data.repository.ExamRepository
+import com.pako.eminus4.ui.common.SubjectBlocksState
 import com.pako.eminus4.data.model.ExamItem
-import com.pako.eminus4.util.Plazos
+import com.pako.eminus4.domain.DueDates
+import com.pako.eminus4.domain.ExamRules
 import com.pako.eminus4.util.iconoInicio
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Exámenes agrupados por materia (solo materias que tienen exámenes), con filtros:
- *  - Estado: Disponibles (predeterminado) / Próximos / Calificados / Todos.
- *  - Materia: "Todas las materias" o una en particular (con su número de exámenes).
+ * Exámenes agrupados por materia: un bloque por materia (activas o pasadas) que se despliega al tocarlo.
+ * Solo dibuja el estado; cargar y agrupar vive en [ExamsViewModel] / [ExamBlocks].
  */
 class ExamsActivity : AppCompatActivity() {
 
@@ -42,54 +49,41 @@ class ExamsActivity : AppCompatActivity() {
         fun start(context: Context) {
             context.startActivity(Intent(context, ExamsActivity::class.java))
         }
-
-        /** Ya abrió, no ha cerrado y no tiene calificación: se puede presentar. */
-        fun estaDisponible(e: ExamItem, ahora: Long = System.currentTimeMillis()) =
-            !e.estaCalificado && !e.estaVencido && (Plazos.parseIso(e.fechaInicio) ?: 0L) <= ahora
-
-        /** Todavía no abre. */
-        fun esProximo(e: ExamItem, ahora: Long = System.currentTimeMillis()) =
-            !e.estaCalificado && (Plazos.parseIso(e.fechaInicio) ?: 0L) > ahora
     }
 
-
-    private lateinit var apiClient: EminusApiClient
+    private val viewModel: ExamsViewModel by viewModels {
+        viewModelFactory { initializer { ExamsViewModel(appContainer.examRepository) } }
+    }
 
     private lateinit var chipGroupFilter: ChipGroup
+    private lateinit var chipActive: Chip
+    private lateinit var chipPast: Chip
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var recyclerExams: RecyclerView
     private lateinit var layoutEmpty: LinearLayout
     private lateinit var txtEmptyTitle: TextView
     private lateinit var txtEmptySubtitle: TextView
-
-    private val allExams = mutableListOf<ExamItem>()
     private lateinit var adapter: ExamsAdapter
-    /** Materias desplegadas (bloques abiertos). */
-    private val abiertos = mutableSetOf<Long>()
-    private var eligioFiltro = false
-    private var cursosPorId: Map<Long, com.pako.eminus4.data.model.Course> = emptyMap()
+    private var renderedPast: Boolean? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_exams)
-
-        apiClient = EminusApiClient(SessionManager(this))
-
-        inicializarVistas()
-        cargarExamenes()
+        bindViews()
+        observe()
     }
 
-    private fun inicializarVistas() {
+    private fun bindViews() {
         val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
-        val appBarLayout = findViewById<View>(R.id.appBarLayout)
-        ViewCompat.setOnApplyWindowInsetsListener(appBarLayout) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(0, systemBars.top, 0, 0)
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.appBarLayout)) { v, insets ->
+            v.setPadding(0, insets.getInsets(WindowInsetsCompat.Type.systemBars()).top, 0, 0)
             insets
         }
         toolbar.setNavigationOnClickListener { finish() }
 
         chipGroupFilter = findViewById(R.id.chipGroupFilter)
+        chipActive = findViewById(R.id.chipActivas)
+        chipPast = findViewById(R.id.chipPasadas)
         swipeRefresh = findViewById(R.id.swipeRefresh)
         recyclerExams = findViewById(R.id.recyclerExams)
         layoutEmpty = findViewById(R.id.layoutEmpty)
@@ -97,115 +91,46 @@ class ExamsActivity : AppCompatActivity() {
         txtEmptySubtitle = findViewById(R.id.txtEmptySubtitle)
 
         swipeRefresh.setColorSchemeColors(ContextCompat.getColor(this, R.color.brand_uv_green))
-        swipeRefresh.setOnRefreshListener { cargarExamenes() }
+        swipeRefresh.setOnRefreshListener { viewModel.load() }
 
-        adapter = ExamsAdapter({ exam -> mostrarDetalle(exam) }, { id -> alternarBloque(id) })
+        adapter = ExamsAdapter(::showDetail, viewModel::toggle)
         recyclerExams.layoutManager = LinearLayoutManager(this)
         recyclerExams.adapter = adapter
 
-        chipGroupFilter.setOnCheckedStateChangeListener { _, _ -> aplicarFiltro(alInicio = true) }
+        chipGroupFilter.setOnCheckedStateChangeListener { _, _ ->
+            val past = chipPast.isChecked
+            if (past != viewModel.state.value.showPast) viewModel.showPast(past)
+        }
     }
 
-    private fun cargarExamenes() {
-        swipeRefresh.isRefreshing = true
-
-        apiClient.getAllCourses { result ->
-            result.onSuccess { allCourses ->
-                // Buscar en cursos activos y en cursos que tengan exámenes registrados
-                val courses = allCourses.filter { it.isActivo() || it.examenes > 0 }
-                cursosPorId = allCourses.associateBy { it.idCurso }
-                if (courses.isEmpty()) {
-                    swipeRefresh.isRefreshing = false
-                    allExams.clear()
-                    aplicarFiltro()
-                    return@onSuccess
-                }
-
-                val nuevos = mutableListOf<ExamItem>()
-                val pendingRequests = AtomicInteger(courses.size)
-                for (c in courses) {
-                    apiClient.getExams(c.idCurso) { examResult ->
-                        examResult.onSuccess { exams ->
-                            for (ex in exams) {
-                                ex.idCurso = c.idCurso
-                                ex.nombreCurso = c.getNombreLimpio()
-                            }
-                            synchronized(nuevos) { nuevos.addAll(exams) }
-                        }
-                        if (pendingRequests.decrementAndGet() == 0) {
-                            swipeRefresh.isRefreshing = false
-                            allExams.clear()
-                            allExams.addAll(nuevos)
-                            aplicarFiltro()
-                        }
-                    }
-                }
-            }.onFailure { error ->
-                swipeRefresh.isRefreshing = false
-                Toast.makeText(this, "Error al cargar cursos: ${error.localizedMessage}", Toast.LENGTH_SHORT).show()
+    private fun observe() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { viewModel.state.collect(::render) }
+                launch { viewModel.errors.collect { Toast.makeText(this@ExamsActivity, it, Toast.LENGTH_SHORT).show() } }
             }
         }
     }
 
-    private fun alternarBloque(idCurso: Long) {
-        if (!abiertos.add(idCurso)) abiertos.remove(idCurso)
-        aplicarFiltro()
-    }
+    private fun render(state: SubjectBlocksState<ExamRepository.Loaded>) {
+        swipeRefresh.isRefreshing = state.loading
+        val blocks = ExamsViewModel.blocksOf(state)
+        chipActive.text = "Materias activas · ${blocks.activeSubjects}"
+        chipPast.text = "Materias pasadas · ${blocks.pastSubjects}"
+        if (chipPast.isChecked != state.showPast) (if (state.showPast) chipPast else chipActive).isChecked = true
 
-    private fun esActiva(idCurso: Long) = cursosPorId[idCurso]?.isActivo() ?: true
+        val sectionChanged = renderedPast != state.showPast
+        renderedPast = state.showPast
+        adapter.submitList(blocks.rows) { if (sectionChanged) recyclerExams.scrollToPosition(0) }
 
-    /** Bloques por materia (activas o pasadas); al tocar uno se despliegan sus exámenes. */
-    private fun aplicarFiltro(alInicio: Boolean = false) {
-        val pasadas = chipGroupFilter.checkedChipId == R.id.chipPasadas
-        val porMateria = allExams.groupBy { it.idCurso }
-        val nActivas = porMateria.keys.count { esActiva(it) }
-        // La primera vez: si no hay nada en materias activas pero sí en pasadas, abrir en pasadas
-        if (!eligioFiltro && !pasadas && nActivas == 0 && porMateria.isNotEmpty()) {
-            eligioFiltro = true
-            findViewById<Chip>(R.id.chipPasadas).isChecked = true   // vuelve a llamar a aplicarFiltro
-            return
-        }
-        if (porMateria.isNotEmpty()) eligioFiltro = true
-        findViewById<Chip>(R.id.chipActivas).text = "Materias activas · $nActivas"
-        findViewById<Chip>(R.id.chipPasadas).text = "Materias pasadas · ${porMateria.size - nActivas}"
-
-        val grupos = porMateria.filter { (id, _) -> esActiva(id) != pasadas }.toList()
-            .sortedWith(compareByDescending<Pair<Long, List<ExamItem>>> { g -> g.second.count { estaDisponible(it) } }
-                .thenBy { it.second.first().nombreCurso })
-        val filas = mutableListOf<FilaExamen>()
-        grupos.forEach { (idCurso, examenes) ->
-            val disp = examenes.count { estaDisponible(it) }
-            val prox = examenes.count { esProximo(it) }
-            val calif = examenes.count { it.estaCalificado }
-            val abierto = idCurso in abiertos || grupos.size == 1
-            val resumen = listOfNotNull(
-                if (examenes.size == 1) "1 examen" else "${examenes.size} exámenes",
-                if (calif > 0) "$calif calificado${if (calif == 1) "" else "s"}" else null,
-                if (prox > 0) "$prox próximo${if (prox == 1) "" else "s"}" else null
-            ).joinToString(" · ")
-            filas += FilaExamen.Encabezado(com.pako.eminus4.ui.common.DatosBloque(
-                idCurso, examenes.first().nombreCurso, resumen, cursosPorId[idCurso]?.getColorHexaLimpio(), abierto,
-                aviso = if (disp > 0) "$disp disponible${if (disp == 1) "" else "s"}" else null,
-                avisoColor = R.color.badge_info_text))
-            if (abierto) examenes.sortedWith(compareByDescending<ExamItem> { estaDisponible(it) }
-                .thenByDescending { esProximo(it) }
-                .thenBy { Plazos.parseIso(it.fechaTermino) ?: Long.MAX_VALUE })
-                .forEach { filas += FilaExamen.Examen(it) }
-        }
-
-        adapter.submitList(filas) { if (alInicio) recyclerExams.scrollToPosition(0) }
-        layoutEmpty.visibility = if (filas.isEmpty()) View.VISIBLE else View.GONE
-        if (pasadas) {
-            txtEmptyTitle.text = "Sin exámenes de materias pasadas"
-            txtEmptySubtitle.text = "Tus materias anteriores no tienen exámenes registrados."
-        } else {
-            txtEmptyTitle.text = "No hay exámenes"
-            txtEmptySubtitle.text = "Tus materias de este periodo no tienen exámenes."
-        }
+        layoutEmpty.visibility = if (blocks.rows.isEmpty() && !state.loading) View.VISIBLE else View.GONE
+        txtEmptyTitle.text = if (state.showPast) "Sin exámenes de materias pasadas" else "No hay exámenes"
+        txtEmptySubtitle.text = if (state.showPast) "Tus materias anteriores no tienen exámenes registrados."
+        else "Tus materias de este periodo no tienen exámenes."
     }
 
     /** Detalle con diseño: estado en color, fechas con íconos y puntaje destacado. */
-    private fun mostrarDetalle(exam: ExamItem) {
+    private fun showDetail(exam: ExamItem) {
         val valor = "%.0f".format(exam.valor ?: 10.0)
         val sheet = com.pako.eminus4.ui.common.DetalleSheet(this)
             .icono(R.drawable.ic_quiz)
@@ -214,7 +139,7 @@ class ExamsActivity : AppCompatActivity() {
         when {
             exam.estaCalificado -> sheet.estado("Calificado", R.color.badge_success_text)
             exam.estaVencido -> sheet.estado("Concluido", R.color.badge_neutral_text)
-            esProximo(exam) -> sheet.estado("Próximo", R.color.badge_warning_text)
+            ExamRules.isUpcoming(exam) -> sheet.estado("Próximo", R.color.badge_warning_text)
             else -> sheet.estado("Disponible", R.color.badge_info_text)
         }
         sheet.fila(R.drawable.ic_event, "Abre", formatDate(exam.fechaInicio))
@@ -297,12 +222,12 @@ class ExamsAdapter(
             txtExamTitle.text = item.titulo
 
             // La materia ya va en el encabezado: aquí se muestra cuándo cierra / abre
-            val termino = Plazos.parseIso(item.fechaTermino)
+            val termino = DueDates.parseEminusDate(item.fechaTermino)
             txtCourseBadge.text = when {
                 item.estaCalificado -> "CALIFICADO"
-                ExamsActivity.esProximo(item) -> "Abre el ${Plazos.fechaCorta(Plazos.parseIso(item.fechaInicio))}".uppercase()
+                ExamRules.isUpcoming(item) -> "Abre el ${DueDates.shortDate(DueDates.parseEminusDate(item.fechaInicio))}".uppercase()
                 item.estaVencido -> "CERRADO"
-                else -> Plazos.plazo(termino).texto.uppercase()
+                else -> DueDates.dueDate(termino).text.uppercase()
             }
 
             val inicio = formatearFecha(item.fechaInicio)
@@ -325,7 +250,7 @@ class ExamsAdapter(
                     badgeStatus.setTextColor(ContextCompat.getColor(ctx, R.color.badge_neutral_text))
                     txtPoints.text = "${"%.0f".format(valor)} pts"
                 }
-                ExamsActivity.esProximo(item) -> {
+                ExamRules.isUpcoming(item) -> {
                     badgeStatus.text = "Próximo"
                     badgeStatus.setBackgroundResource(R.drawable.bg_pill_badge)
                     badgeStatus.setTextColor(ContextCompat.getColor(ctx, R.color.badge_warning_text))

@@ -221,12 +221,18 @@ class MiuvSync(
     private fun extraerDatos() {
         val js = """
             (function() {
+              // Solo los campos académicos que usa la app: los demás (CURP, datos bancarios,
+              // datos personales…) ni siquiera salen de la página hacia la app.
+              var permitidos = ['programa', 'campus', 'facultad', 'área', 'area', 'nivel'];
               var pares = {};
               var ps = document.querySelectorAll('#div-iAcademica p, #div-iPersonal p, .bloques p');
               for (var i = 0; i < ps.length; i++) {
                 var t = (ps[i].innerText || '').replace(/\s+/g, ' ').trim();
                 var k = t.indexOf(':');
-                if (k > 0) pares[t.substring(0, k).trim().toLowerCase()] = t.substring(k + 1).trim();
+                if (k <= 0) continue;
+                var clave = t.substring(0, k).trim().toLowerCase();
+                var sirve = permitidos.some(function (p) { return clave.indexOf(p) === 0; });
+                if (sirve) pares[clave] = t.substring(k + 1).trim();
               }
               var prog = document.getElementById('content_wucDatosGralAlum1_lblProg');
               if (prog) pares['programa'] = (prog.innerText || '').trim();

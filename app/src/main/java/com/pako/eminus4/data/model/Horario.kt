@@ -22,7 +22,7 @@ data class SesionClase(
     val hora: String = "",
     /** Salón de ese día, si MiUV lo trae. */
     val salon: String? = null,
-    /** Hora de término: la página no la trae; se completa con el PDF de "Imprimir" (`HorarioPdf`). */
+    /** Hora de término: la página no la trae; se completa con el PDF de "Imprimir" (`ScheduleRepository` + `SchedulePdfParser`). */
     val fin: String? = null
 ) {
     /** 1 = lunes … 7 = domingo (0 si no se reconoce). */

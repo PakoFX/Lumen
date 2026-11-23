@@ -1,323 +1,230 @@
 package com.pako.eminus4.ui.courses
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.view.LayoutInflater
+import android.transition.TransitionManager
 import android.view.View
 import android.view.ViewGroup
-import android.widget.ImageButton
+import android.view.inputmethod.InputMethodManager
+import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
+import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-import androidx.core.widget.doAfterTextChanged
 import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
+import com.google.android.material.textfield.TextInputEditText
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
+import com.pako.eminus4.appContainer
 import com.pako.eminus4.data.model.Course
+import com.pako.eminus4.domain.CourseCatalog
+import com.pako.eminus4.domain.CourseCatalog.Section
+import com.pako.eminus4.ui.main.MainActivity
+import kotlinx.coroutines.launch
 
-class CoursesFragment : Fragment() {
+/** Lista de cursos. Solo dibuja [CoursesUiState]; la lógica vive en [CoursesViewModel]. */
+class CoursesFragment : Fragment(R.layout.fragment_courses) {
 
-    private lateinit var sessionManager: SessionManager
-    private lateinit var apiClient: EminusApiClient
+    private val viewModel: CoursesViewModel by viewModels {
+        viewModelFactory { initializer { CoursesViewModel(requireContext().appContainer.courseRepository) } }
+    }
+
     private lateinit var courseAdapter: CourseAdapter
-
-    private lateinit var swipeRefreshLayout: SwipeRefreshLayout
+    private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var rvCourses: RecyclerView
     private lateinit var progressLoading: ProgressBar
     private lateinit var layoutEmptyState: View
     private lateinit var txtEmptyMessage: TextView
-    private lateinit var txtFiltroActual: TextView
-    private lateinit var imgDesplegarFiltros: android.widget.ImageView
-    private lateinit var chipGroupFilters: com.google.android.material.chip.ChipGroup
-    private lateinit var chipFilterActivos: Chip
-    private lateinit var chipFilterTodos: Chip
-    private lateinit var chipFilterArchivados: Chip
+    private lateinit var txtCurrentSection: TextView
+    private lateinit var imgToggleFilters: ImageView
+    private lateinit var chipGroupFilters: ChipGroup
+    private lateinit var layoutSearch: View
+    private lateinit var editSearch: TextInputEditText
+    private lateinit var sectionChips: Map<Section, Chip>
 
-    /** Apartados de la lista (mismos criterios que Eminus web). */
-    private lateinit var layoutBuscar: View
-    private lateinit var editBuscar: com.google.android.material.textfield.TextInputEditText
+    /** Para avisar del estado de la sesión una sola vez por cambio, no en cada repintado. */
+    private var shownFailure: CoursesUiState.LoadFailure? = null
+    private var shownSection: Section? = null
 
-    /** Minúsculas y sin acentos: "Diseño" encuentra "DISENO" y al revés. */
-    private fun normalizar(s: String) = java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
-        .replace(Regex("\\p{Mn}+"), "").replace(Regex("\\s+"), " ").trim()
-
-    private enum class Filtro { ACTIVOS, TODOS, ARCHIVADOS }
-
-    private var allCourses: List<Course> = emptyList()
-
-    private fun filtroActual(): Filtro = when {
-        chipFilterArchivados.isChecked -> Filtro.ARCHIVADOS
-        chipFilterTodos.isChecked -> Filtro.TODOS
-        else -> Filtro.ACTIVOS
-    }
-
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ): View? {
-        return inflater.inflate(R.layout.fragment_courses, container, false)
-    }
+    private val uiPrefs by lazy { requireContext().getSharedPreferences("ui", Context.MODE_PRIVATE) }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-
-        sessionManager = SessionManager(requireContext())
-        apiClient = EminusApiClient(sessionManager)
-
-        inicializarVistas(view)
-        configurarRecyclerView()
-        configurarFiltros()
-        cargarCursosDesdeCache()
-        cargarCursosDesdeApi()
+        bindViews(view)
+        setUpList()
+        setUpFilters(view)
+        observe()
     }
 
-    private fun cargarCursosDesdeCache() {
-        val cached = sessionManager.getCachedCourses()
-        if (cached.isNotEmpty()) {
-            allCourses = cached
-            aplicarFiltro()
-        }
+    /** Llamado por MainActivity al volver a la pantalla: reutiliza la lista si se pidió hace segundos. */
+    fun recargarCursos() {
+        if (isAdded) viewModel.refresh(force = false)
     }
 
-    private fun inicializarVistas(view: View) {
-        swipeRefreshLayout = view.findViewById(R.id.swipeRefreshLayout)
+    private fun bindViews(view: View) {
+        swipeRefresh = view.findViewById(R.id.swipeRefreshLayout)
         rvCourses = view.findViewById(R.id.rvCourses)
         progressLoading = view.findViewById(R.id.progressLoading)
         layoutEmptyState = view.findViewById(R.id.layoutEmptyState)
         txtEmptyMessage = view.findViewById(R.id.txtEmptyMessage)
-        txtFiltroActual = view.findViewById(R.id.txtFiltroActual)
-        imgDesplegarFiltros = view.findViewById(R.id.imgDesplegarFiltros)
+        txtCurrentSection = view.findViewById(R.id.txtFiltroActual)
+        imgToggleFilters = view.findViewById(R.id.imgDesplegarFiltros)
         chipGroupFilters = view.findViewById(R.id.chipGroupFilters)
-        chipFilterActivos = view.findViewById(R.id.chipFilterActivos)
-        chipFilterTodos = view.findViewById(R.id.chipFilterTodos)
-        chipFilterArchivados = view.findViewById(R.id.chipFilterArchivados)
-        layoutBuscar = view.findViewById(R.id.layoutBuscarCurso)
-        editBuscar = view.findViewById(R.id.editBuscarCurso)
-        editBuscar.doAfterTextChanged { aplicarFiltro(alInicio = true) }
-        editBuscar.setOnEditorActionListener { v, _, _ ->
-            (requireContext().getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
-                .hideSoftInputFromWindow(v.windowToken, 0)
-            v.clearFocus(); true
-        }
-
-        // La barra de estado la cubre la barra superior de MainActivity
-        swipeRefreshLayout.setColorSchemeColors(requireContext().getColor(android.R.color.holo_green_dark))
-        // Recargar = deslizar hacia abajo (el botón de recargar era redundante y se quitó)
-        swipeRefreshLayout.setOnRefreshListener {
-            cargarCursosDesdeApi()
-        }
+        layoutSearch = view.findViewById(R.id.layoutBuscarCurso)
+        editSearch = view.findViewById(R.id.editBuscarCurso)
+        sectionChips = mapOf(
+            Section.ACTIVE to view.findViewById(R.id.chipFilterActivos),
+            Section.ALL to view.findViewById(R.id.chipFilterTodos),
+            Section.ARCHIVED to view.findViewById(R.id.chipFilterArchivados)
+        )
+        swipeRefresh.setColorSchemeColors(requireContext().getColor(android.R.color.holo_green_dark))
+        swipeRefresh.setOnRefreshListener { viewModel.refresh() }
     }
 
-    private fun configurarRecyclerView() {
-        courseAdapter = CourseAdapter(onCourseLongClick = ::confirmarArchivado) { curso ->
-            val intent = Intent(requireContext(), CourseDetailActivity::class.java).apply {
-                putExtra(CourseDetailActivity.EXTRA_COURSE_ID, curso.idCurso)
-                putExtra(CourseDetailActivity.EXTRA_COURSE_NAME, curso.nombre)
-                putExtra(CourseDetailActivity.EXTRA_COURSE_COLOR, curso.getColorHexaLimpio())
-                putExtra(CourseDetailActivity.EXTRA_COURSE_THUMBNAIL, curso.getFullThumbnailUrl())
-                putExtra(CourseDetailActivity.EXTRA_COURSE_ACTIVIDADES, curso.actividades)
-                putExtra(CourseDetailActivity.EXTRA_COURSE_FOROS, curso.foros)
-                putExtra(CourseDetailActivity.EXTRA_COURSE_INTEGRANTES, curso.integrantes)
-                putExtra(CourseDetailActivity.EXTRA_COURSE_DEPENDENCIA, curso.dependencia)
-            }
-            startActivity(intent)
-        }
+    private fun setUpList() {
+        courseAdapter = CourseAdapter(onCourseLongClick = ::confirmArchive, onCourseClick = ::openCourse)
         rvCourses.layoutManager = LinearLayoutManager(requireContext())
         rvCourses.adapter = courseAdapter
     }
 
-    // Filtros plegables: se recuerda si el usuario los dejó abiertos
-    private val prefsUi by lazy { requireContext().getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
-
-    private fun ponerFiltrosAbiertos(abiertos: Boolean, animar: Boolean) {
-        if (animar) android.transition.TransitionManager.beginDelayedTransition(chipGroupFilters.parent as ViewGroup)
-        chipGroupFilters.visibility = if (abiertos) View.VISIBLE else View.GONE
-        imgDesplegarFiltros.animate().rotation(if (abiertos) 180f else 0f).setDuration(if (animar) 180 else 0).start()
-        prefsUi.edit().putBoolean("cursos_filtros_abiertos", abiertos).apply()
+    private fun setUpFilters(view: View) {
+        showFilters(uiPrefs.getBoolean(PREF_FILTERS_OPEN, false), animate = false)
+        view.findViewById<View>(R.id.btnDesplegarFiltros).setOnClickListener {
+            showFilters(chipGroupFilters.visibility != View.VISIBLE, animate = true)
+        }
+        sectionChips.forEach { (section, chip) ->
+            chip.setOnCheckedChangeListener { _, checked -> if (checked) viewModel.selectSection(section) }
+        }
+        editSearch.doAfterTextChanged { viewModel.search(it?.toString().orEmpty()) }
+        editSearch.setOnEditorActionListener { v, _, _ ->
+            (requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(v.windowToken, 0)
+            v.clearFocus()
+            true
+        }
     }
 
-    private fun configurarFiltros() {
-        ponerFiltrosAbiertos(prefsUi.getBoolean("cursos_filtros_abiertos", false), animar = false)
-        requireView().findViewById<View>(R.id.btnDesplegarFiltros).setOnClickListener {
-            ponerFiltrosAbiertos(chipGroupFilters.visibility != View.VISIBLE, animar = true)
-        }
-        listOf(chipFilterActivos, chipFilterTodos, chipFilterArchivados).forEach { chip ->
-            chip.setOnCheckedChangeListener { _, isChecked ->
-                if (isChecked) aplicarFiltro(alInicio = true)
+    /** Los filtros se pliegan para ahorrar pantalla; se recuerda cómo los dejó la persona. */
+    private fun showFilters(open: Boolean, animate: Boolean) {
+        if (animate) TransitionManager.beginDelayedTransition(chipGroupFilters.parent as ViewGroup)
+        chipGroupFilters.visibility = if (open) View.VISIBLE else View.GONE
+        imgToggleFilters.animate().rotation(if (open) 180f else 0f).setDuration(if (animate) 180 else 0).start()
+        uiPrefs.edit().putBoolean(PREF_FILTERS_OPEN, open).apply()
+    }
+
+    private fun observe() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { viewModel.state.collect(::render) }
+                launch { viewModel.events.collect(::onEvent) }
             }
         }
     }
 
-    // ===================== ARCHIVAR =====================
+    private fun render(state: CoursesUiState) {
+        val selection = state.selection
+        swipeRefresh.isRefreshing = state.loading && state.all.isNotEmpty()
+        progressLoading.visibility = if (state.loading && state.all.isEmpty()) View.VISIBLE else View.GONE
 
-    /** Igual que Eminus web: se confirma al archivar; desarchivar es directo. */
-    private fun confirmarArchivado(curso: Course) {
-        val nombre = curso.getNombreLimpio()
-        if (curso.esArchivado()) {
-            cambiarArchivado(curso, archivar = false)
+        renderSection(state, selection.counts)
+        val sectionChanged = shownSection != state.section
+        shownSection = state.section
+        courseAdapter.submitList(selection.courses) { if (sectionChanged && isAdded) rvCourses.scrollToPosition(0) }
+
+        renderEmptyState(state, selection.courses.isEmpty())
+        renderSessionBanner(state)
+    }
+
+    private fun renderSection(state: CoursesUiState, counts: CourseCatalog.Counts) {
+        txtCurrentSection.text = "${state.section.title} · ${state.selection.courses.size}"
+        sectionChips.forEach { (section, chip) ->
+            chip.text = chip.text.toString().substringBefore(" · ") + " · ${counts.of(section)}"
+            if (chip.isChecked != (section == state.section)) chip.isChecked = section == state.section
+        }
+        val withSearch = CourseCatalog.hasSearch(state.section)
+        layoutSearch.visibility = if (withSearch) View.VISIBLE else View.GONE
+        if (!withSearch && !editSearch.text.isNullOrEmpty()) editSearch.setText("")
+    }
+
+    private fun renderEmptyState(state: CoursesUiState, empty: Boolean) {
+        layoutEmptyState.visibility = if (empty && !state.loading) View.VISIBLE else View.GONE
+        if (!empty) return
+        txtEmptyMessage.text = when {
+            state.all.isEmpty() && state.loadFailure == CoursesUiState.LoadFailure.SESSION_EXPIRED ->
+                "Tu sesión en línea ha caducado y aún no tienes materias descargadas.\n\nToca \"Renovar\" arriba para iniciar sesión y sincronizar tus cursos."
+            state.all.isEmpty() && state.loadFailure == CoursesUiState.LoadFailure.OFFLINE ->
+                "No se pudo conectar a Eminus.\nDesliza hacia abajo para reintentar."
+            state.query.isNotBlank() && CourseCatalog.hasSearch(state.section) ->
+                "Ninguna materia coincide con \"${state.query.trim()}\""
+            state.section == Section.ACTIVE -> "No tienes materias activas en este período"
+            state.section == Section.ALL -> "No se encontraron materias registradas"
+            else -> "No tienes cursos archivados.\n\nMantén presionado un curso para archivarlo."
+        }
+    }
+
+    /** Banner de MainActivity: sesión caducada / sin conexión, o se oculta al volver a cargar bien. */
+    private fun renderSessionBanner(state: CoursesUiState) {
+        if (state.loading || state.loadFailure == shownFailure) return
+        shownFailure = state.loadFailure
+        val main = activity as? MainActivity ?: return
+        val expired = state.loadFailure == CoursesUiState.LoadFailure.SESSION_EXPIRED
+        when {
+            state.loadFailure == null -> main.ocultarBannerSesion()
+            state.all.isNotEmpty() -> main.mostrarBannerSesionExpirada(
+                if (expired) "Sesión caducada. Mostrando cursos guardados." else "Modo sin conexión. Mostrando cursos guardados."
+            )
+            else -> main.mostrarBannerSesionExpirada(if (expired) "Sesión en línea caducada." else "Sin conexión a internet.")
+        }
+    }
+
+    private fun onEvent(event: CoursesEvent) {
+        val message = when (event) {
+            is CoursesEvent.Archived -> if (event.archived) "Curso archivado" else "Curso restaurado"
+            is CoursesEvent.ArchiveFailed -> "No se pudo ${if (event.archived) "archivar" else "restaurar"}: ${event.reason}"
+        }
+        Toast.makeText(requireContext(), message, if (event is CoursesEvent.ArchiveFailed) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+    }
+
+    /** Igual que Eminus web: se confirma al archivar; restaurar es directo. */
+    private fun confirmArchive(course: Course) {
+        if (course.esArchivado()) {
+            viewModel.setArchived(course, archived = false)
             return
         }
-        androidx.appcompat.app.AlertDialog.Builder(requireContext())
+        AlertDialog.Builder(requireContext())
             .setTitle("Archivar curso")
-            .setMessage("¿Deseas archivar \"$nombre\"? Solo estará disponible en el apartado Archivados.")
-            .setPositiveButton("Archivar") { _, _ -> cambiarArchivado(curso, archivar = true) }
+            .setMessage("¿Deseas archivar \"${course.getNombreLimpio()}\"? Solo estará disponible en el apartado Archivados.")
+            .setPositiveButton("Archivar") { _, _ -> viewModel.setArchived(course, archived = true) }
             .setNegativeButton("Cancelar", null)
             .show()
     }
 
-    /** Actualiza al instante en la lista y en Eminus; si Eminus falla, se revierte. */
-    private fun cambiarArchivado(curso: Course, archivar: Boolean) {
-        val anterior = allCourses
-        actualizarCursos(allCourses.map {
-            if (it.idCurso == curso.idCurso) it.copy(archivado = if (archivar) 1 else 0) else it
+    private fun openCourse(course: Course) {
+        startActivity(Intent(requireContext(), CourseDetailActivity::class.java).apply {
+            putExtra(CourseDetailActivity.EXTRA_COURSE_ID, course.idCurso)
+            putExtra(CourseDetailActivity.EXTRA_COURSE_NAME, course.nombre)
+            putExtra(CourseDetailActivity.EXTRA_COURSE_COLOR, course.getColorHexaLimpio())
+            putExtra(CourseDetailActivity.EXTRA_COURSE_THUMBNAIL, course.getFullThumbnailUrl())
+            putExtra(CourseDetailActivity.EXTRA_COURSE_ACTIVIDADES, course.actividades)
+            putExtra(CourseDetailActivity.EXTRA_COURSE_FOROS, course.foros)
+            putExtra(CourseDetailActivity.EXTRA_COURSE_INTEGRANTES, course.integrantes)
+            putExtra(CourseDetailActivity.EXTRA_COURSE_DEPENDENCIA, course.dependencia)
         })
-        apiClient.setCourseArchived(curso.idCurso, archivar) { result ->
-            if (!isAdded) return@setCourseArchived
-            result.onSuccess {
-                Toast.makeText(
-                    requireContext(),
-                    if (archivar) "Curso archivado" else "Curso restaurado",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }.onFailure { e ->
-                actualizarCursos(anterior)
-                Toast.makeText(requireContext(), "No se pudo ${if (archivar) "archivar" else "restaurar"}: ${e.message}", Toast.LENGTH_LONG).show()
-            }
-        }
     }
 
-    private fun actualizarCursos(cursos: List<Course>) {
-        allCourses = cursos
-        sessionManager.saveCachedCourses(cursos)
-        aplicarFiltro()
-    }
-
-    fun recargarCursos() {
-        if (isAdded) {
-            cargarCursosDesdeApi()
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (allCourses.isEmpty() && !sessionManager.isSessionExpired()) {
-            cargarCursosDesdeApi()
-        }
-    }
-
-    private fun cargarCursosDesdeApi() {
-        if (!swipeRefreshLayout.isRefreshing && allCourses.isEmpty()) {
-            progressLoading.visibility = View.VISIBLE
-        }
-
-        apiClient.getAllCourses { result ->
-            if (!isAdded) return@getAllCourses
-
-            progressLoading.visibility = View.GONE
-            swipeRefreshLayout.isRefreshing = false
-
-            result.onSuccess { cursos ->
-                allCourses = cursos
-                sessionManager.saveCachedCourses(cursos)
-                sessionManager.setSessionExpired(false)
-                (activity as? com.pako.eminus4.ui.main.MainActivity)?.ocultarBannerSesion()
-                aplicarFiltro()
-            }.onFailure { error ->
-                val esExpirada = error.message?.contains("401") == true || error.message?.contains("expirada") == true
-                if (esExpirada) {
-                    sessionManager.setSessionExpired(true)
-                }
-
-                if (allCourses.isNotEmpty()) {
-                    val mensaje = if (esExpirada) {
-                        "Sesión caducada. Mostrando cursos guardados."
-                    } else {
-                        "Modo sin conexión. Mostrando cursos guardados."
-                    }
-                    (activity as? com.pako.eminus4.ui.main.MainActivity)?.mostrarBannerSesionExpirada(mensaje)
-                    aplicarFiltro()
-                } else {
-                    val mensaje = if (esExpirada) {
-                        "Sesión en línea caducada."
-                    } else {
-                        "Sin conexión a internet."
-                    }
-                    (activity as? com.pako.eminus4.ui.main.MainActivity)?.mostrarBannerSesionExpirada(mensaje)
-
-                    layoutEmptyState.visibility = View.VISIBLE
-                    txtEmptyMessage.text = if (esExpirada) {
-                        "Tu sesión en línea ha caducado y aún no tienes materias descargadas.\n\nToca \"Renovar\" arriba para iniciar sesión y sincronizar tus cursos."
-                    } else {
-                        "No se pudo conectar a Eminus.\nDesliza hacia abajo para reintentar."
-                    }
-                    courseAdapter.submitList(emptyList())
-                }
-            }
-        }
-    }
-
-    /**
-     * Apartados (mismos criterios que Eminus web):
-     *  - Activos: vigentes y no archivados.
-     *  - Todos: activos → cerrados → archivados (los nuevos aparecen DEBAJO de los activos,
-     *    no arriba fuera de la vista).
-     *  - Archivados: los que el alumno archivó.
-     * @param alInicio al cambiar de apartado, volver al principio de la lista.
-     */
-    private fun aplicarFiltro(alInicio: Boolean = false) {
-        val filtro = filtroActual()
-        val (archivados, visibles) = allCourses.partition { it.esArchivado() }
-        val (activos, cerrados) = visibles.partition { it.isActivo() }
-        val delFiltro = when (filtro) {
-            Filtro.ACTIVOS -> activos
-            Filtro.TODOS -> activos + cerrados + archivados
-            Filtro.ARCHIVADOS -> archivados
-        }
-        // Buscador solo en Todos / Archivados
-        val conBuscador = filtro != Filtro.ACTIVOS
-        if (layoutBuscar.visibility != (if (conBuscador) View.VISIBLE else View.GONE)) {
-            layoutBuscar.visibility = if (conBuscador) View.VISIBLE else View.GONE
-            if (!conBuscador && !editBuscar.text.isNullOrEmpty()) editBuscar.setText("")
-        }
-        val consulta = if (conBuscador) normalizar(editBuscar.text?.toString().orEmpty()) else ""
-        val cursosFiltrados = if (consulta.isBlank()) delFiltro else {
-            val palabras = consulta.split(' ').filter { it.isNotBlank() }
-            delFiltro.filter { c ->
-                val nombre = normalizar(c.nombre + " " + com.pako.eminus4.util.NombreMateria.bonito(c.nombre))
-                palabras.all { nombre.contains(it) }
-            }
-        }
-
-        txtFiltroActual.text = when (filtro) {
-            Filtro.ACTIVOS -> "Activos"
-            Filtro.TODOS -> "Todos los cursos"
-            Filtro.ARCHIVADOS -> "Archivados"
-        } + " · ${cursosFiltrados.size}"
-        listOf(chipFilterActivos to activos.size, chipFilterTodos to (activos.size + cerrados.size + archivados.size),
-            chipFilterArchivados to archivados.size).forEach { (chip, n) ->
-            chip.text = chip.text.toString().substringBefore(" · ") + " · $n"
-        }
-
-        courseAdapter.submitList(cursosFiltrados) {
-            if (alInicio && isAdded) rvCourses.scrollToPosition(0)
-        }
-
-        if (cursosFiltrados.isEmpty()) {
-            layoutEmptyState.visibility = View.VISIBLE
-            txtEmptyMessage.text = if (consulta.isNotBlank()) "Ninguna materia coincide con \"${editBuscar.text?.toString()?.trim()}\"" else when (filtro) {
-                Filtro.ACTIVOS -> "No tienes materias activas en este período"
-                Filtro.TODOS -> "No se encontraron materias registradas"
-                Filtro.ARCHIVADOS -> "No tienes cursos archivados.\n\nMantén presionado un curso para archivarlo."
-            }
-        } else {
-            layoutEmptyState.visibility = View.GONE
-        }
+    private companion object {
+        const val PREF_FILTERS_OPEN = "cursos_filtros_abiertos"
     }
 }
-

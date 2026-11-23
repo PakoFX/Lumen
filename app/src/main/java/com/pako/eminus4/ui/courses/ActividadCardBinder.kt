@@ -8,31 +8,32 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import com.pako.eminus4.R
 import com.pako.eminus4.data.model.CourseActivityItem
-import com.pako.eminus4.data.model.EstadoAlumno
-import com.pako.eminus4.util.Plazos
+import com.pako.eminus4.domain.StudentStatus
+import com.pako.eminus4.ui.common.icon
+import com.pako.eminus4.domain.DueDates
 import com.pako.eminus4.util.iconoInicio
 
 /**
- * Pinta una tarjeta `item_all_activity.xml` con el criterio único de [EstadoAlumno].
+ * Pinta una tarjeta `item_all_activity.xml` con el criterio único de [StudentStatus].
  * Se usa en la agenda de Avisos y en "Todas las actividades".
  */
 object ActividadCardBinder {
 
-    fun colorEstado(context: Context, estado: EstadoAlumno): Int = ContextCompat.getColor(
+    fun statusColor(context: Context, estado: StudentStatus): Int = ContextCompat.getColor(
         context,
         when (estado) {
-            EstadoAlumno.POR_HACER, EstadoAlumno.BORRADOR -> R.color.badge_warning_text
-            EstadoAlumno.ESPERANDO -> R.color.badge_info_text
-            EstadoAlumno.CALIFICADA -> R.color.badge_success_text
-            EstadoAlumno.NO_ENTREGADA -> R.color.badge_error_text
+            StudentStatus.TO_DO, StudentStatus.DRAFT -> R.color.badge_warning_text
+            StudentStatus.AWAITING_GRADE -> R.color.badge_info_text
+            StudentStatus.GRADED -> R.color.badge_success_text
+            StudentStatus.NOT_SUBMITTED -> R.color.badge_error_text
         }
     )
 
-    fun colorUrgencia(context: Context, urgencia: Plazos.Urgencia): Int = ContextCompat.getColor(
+    fun urgencyColor(context: Context, urgencia: DueDates.Urgency): Int = ContextCompat.getColor(
         context,
         when (urgencia) {
-            Plazos.Urgencia.CRITICA, Plazos.Urgencia.VENCIDA -> R.color.badge_error_text
-            Plazos.Urgencia.PRONTO -> R.color.badge_warning_text
+            DueDates.Urgency.CRITICAL, DueDates.Urgency.OVERDUE -> R.color.badge_error_text
+            DueDates.Urgency.SOON -> R.color.badge_warning_text
             else -> R.color.text_secondary
         }
     )
@@ -44,7 +45,7 @@ object ActividadCardBinder {
     fun bind(view: View, item: CourseActivityItem, compacto: Boolean = false, onClick: (CourseActivityItem) -> Unit) {
         val ctx = view.context
         val act = item.activity
-        val estado = act.estadoAlumno
+        val estado = act.studentStatus
 
         val stripe = view.findViewById<View>(R.id.viewCourseStripe)
         val txtCourse = view.findViewById<TextView>(R.id.txtCourseBadge)
@@ -66,10 +67,10 @@ object ActividadCardBinder {
         txtTeam.iconoInicio(R.drawable.ic_group, tamanoDp = 14, separacionDp = 4)
         txtTitle.text = act.nombre
 
-        val colorEst = colorEstado(ctx, estado)
-        badge.text = estado.etiqueta
+        val colorEst = statusColor(ctx, estado)
+        badge.text = estado.label
         badge.setTextColor(colorEst)
-        badge.iconoInicio(estado.icono, colorEst, tamanoDp = 14, separacionDp = 4)
+        badge.iconoInicio(estado.icon, colorEst, tamanoDp = 14, separacionDp = 4)
 
         txtCourse.visibility = if (compacto) View.GONE else View.VISIBLE
         badge.visibility = if (compacto) View.GONE else View.VISIBLE
@@ -81,22 +82,22 @@ object ActividadCardBinder {
 
         // Línea de tiempo según la situación
         when (estado) {
-            EstadoAlumno.POR_HACER, EstadoAlumno.BORRADOR -> {
-                val p = Plazos.plazo(act.terminoMillis)
-                txtWhen.text = p.texto
-                txtWhen.setTextColor(colorUrgencia(ctx, p.urgencia))
+            StudentStatus.TO_DO, StudentStatus.DRAFT -> {
+                val p = DueDates.dueDate(act.terminoMillis)
+                txtWhen.text = p.text
+                txtWhen.setTextColor(urgencyColor(ctx, p.urgency))
             }
-            EstadoAlumno.ESPERANDO -> {
-                txtWhen.text = "Enviada el ${Plazos.fechaCorta(Plazos.parseIso(act.fechaEntrega))}"
+            StudentStatus.AWAITING_GRADE -> {
+                txtWhen.text = "Enviada el ${DueDates.shortDate(DueDates.parseEminusDate(act.fechaEntrega))}"
                 txtWhen.setTextColor(ContextCompat.getColor(ctx, R.color.text_secondary))
             }
-            EstadoAlumno.CALIFICADA -> {
-                val rev = Plazos.parseIso(act.fechaRevision)
-                txtWhen.text = if (rev != null) "Revisada el ${Plazos.fechaCorta(rev)}" else "Revisada por el docente"
+            StudentStatus.GRADED -> {
+                val rev = DueDates.parseEminusDate(act.fechaRevision)
+                txtWhen.text = if (rev != null) "Revisada el ${DueDates.shortDate(rev)}" else "Revisada por el docente"
                 txtWhen.setTextColor(ContextCompat.getColor(ctx, R.color.text_secondary))
             }
-            EstadoAlumno.NO_ENTREGADA -> {
-                txtWhen.text = "Cerró el ${Plazos.fechaCorta(act.terminoMillis)}"
+            StudentStatus.NOT_SUBMITTED -> {
+                txtWhen.text = "Cerró el ${DueDates.shortDate(act.terminoMillis)}"
                 txtWhen.setTextColor(ContextCompat.getColor(ctx, R.color.text_secondary))
             }
         }

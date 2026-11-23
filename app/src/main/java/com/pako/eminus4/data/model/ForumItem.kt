@@ -25,8 +25,8 @@ data class ForumItem(
      */
     fun estaAbierto(ahora: Long = System.currentTimeMillis()): Boolean {
         if (!cursoActivo || estado != 1) return false
-        val cierre = com.pako.eminus4.util.Plazos.parseIso(fechaProrroga)
-            ?: com.pako.eminus4.util.Plazos.parseIso(fechaTermino) ?: return true
+        val cierre = com.pako.eminus4.domain.DueDates.parseEminusDate(fechaProrroga)
+            ?: com.pako.eminus4.domain.DueDates.parseEminusDate(fechaTermino) ?: return true
         return ahora <= cierre
     }
 }

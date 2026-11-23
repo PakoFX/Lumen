@@ -11,8 +11,8 @@ import androidx.recyclerview.widget.RecyclerView
 import com.pako.eminus4.R
 import androidx.core.content.ContextCompat
 import com.pako.eminus4.data.model.Activity
-import com.pako.eminus4.data.model.EstadoAlumno
-import com.pako.eminus4.util.Plazos
+import com.pako.eminus4.domain.StudentStatus
+import com.pako.eminus4.domain.DueDates
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -48,13 +48,13 @@ class ActivityAdapter(
             txtName.text  = activity.nombre
 
             val ctx = itemView.context
-            val estado = activity.estadoAlumno
+            val estado = activity.studentStatus
 
             // Fecha: plazo relativo si aún hay que hacerla, fecha normal en otro caso
-            if (estado.esPendiente) {
-                val p = Plazos.plazo(activity.terminoMillis)
-                txtDate.text = p.texto + if (activity.esPorEquipos) " · En equipo" else ""
-                txtDate.setTextColor(ActividadCardBinder.colorUrgencia(ctx, p.urgencia))
+            if (estado.isPending) {
+                val p = DueDates.dueDate(activity.terminoMillis)
+                txtDate.text = p.text + if (activity.esPorEquipos) " · En equipo" else ""
+                txtDate.setTextColor(ActividadCardBinder.urgencyColor(ctx, p.urgency))
             } else {
                 txtDate.text = formatearFecha(activity.fechaLimite) + if (activity.esPorEquipos) " · En equipo" else ""
                 txtDate.setTextColor(ContextCompat.getColor(ctx, R.color.text_secondary))
@@ -72,13 +72,13 @@ class ActivityAdapter(
                 txtScore.setTextColor(ContextCompat.getColor(ctx, R.color.text_tertiary))
             }
 
-            // Estado con el criterio único (EstadoAlumno)
+            // Estado con el criterio único (StudentStatus)
             txtStatus.text = when (estado) {
-                EstadoAlumno.ESPERANDO -> "En revisión"   // corto: la columna es angosta
-                EstadoAlumno.BORRADOR -> "Borrador"
-                else -> estado.etiqueta
+                StudentStatus.AWAITING_GRADE -> "En revisión"   // corto: la columna es angosta
+                StudentStatus.DRAFT -> "Borrador"
+                else -> estado.label
             }
-            txtStatus.setTextColor(ActividadCardBinder.colorEstado(ctx, estado))
+            txtStatus.setTextColor(ActividadCardBinder.statusColor(ctx, estado))
 
             itemView.setOnClickListener {
                 onActivityClick(activity)

@@ -7,9 +7,18 @@ import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.Chip
@@ -18,15 +27,17 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
-import com.google.gson.JsonObject
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
-import com.pako.eminus4.data.model.Course
+import com.pako.eminus4.appContainer
+import com.pako.eminus4.data.remote.eminus.EminusHttp
+import com.pako.eminus4.domain.MessageDraft
+import com.pako.eminus4.ui.common.ListaAdjuntos
+import com.pako.eminus4.util.Adjuntos
+import kotlinx.coroutines.launch
 
 /**
- * Redactar un mensaje nuevo o responder uno recibido (centromensajes de Eminus).
- * Para responder: [startRespuesta] con el curso, el remitente y el asunto original.
+ * Redactar o responder un mensaje: materia (solo vigentes), destinatarios, asunto, texto y archivos.
+ * Solo dibuja [ComposeUiState]; la lógica vive en [ComposeMessageViewModel].
  */
 class ComposeMessageActivity : AppCompatActivity() {
 
@@ -50,246 +61,209 @@ class ComposeMessageActivity : AppCompatActivity() {
             ctx.startActivity(Intent(ctx, ComposeMessageActivity::class.java).apply {
                 putExtra(EXTRA_CURSO, idCurso)
                 putExtra(EXTRA_PARA, idUsuarioPara)
-                val a = asuntoOriginal.orEmpty().trim()
-                putExtra(EXTRA_ASUNTO, if (a.startsWith("RE:", ignoreCase = true)) a else "RE: $a")
+                putExtra(EXTRA_ASUNTO, MessageDraft.replySubject(asuntoOriginal))
                 putExtra(EXTRA_PADRE, idMensajeOriginal)
             })
         }
     }
 
-    private lateinit var sessionManager: SessionManager
-    private lateinit var apiClient: EminusApiClient
+    private val viewModel: ComposeMessageViewModel by viewModels {
+        viewModelFactory {
+            initializer {
+                ComposeMessageViewModel(
+                    appContainer.messageRepository, appContainer.courseRepository,
+                    parentId = intent.getLongExtra(EXTRA_PADRE, 0L),
+                    initialCourseId = intent.getLongExtra(EXTRA_CURSO, -1L),
+                    preselectedUserId = intent.getStringExtra(EXTRA_PARA),
+                    myStudentId = { appContainer.sessionStore.getSessionStudentId() }
+                )
+            }
+        }
+    }
 
-    private lateinit var dropMateria: MaterialAutoCompleteTextView
-    private lateinit var tilMateria: TextInputLayout
-    private lateinit var btnAgregar: MaterialButton
-    private lateinit var chipsDestinatarios: ChipGroup
-    private lateinit var txtSinDestinatarios: TextView
-    private lateinit var tilAsunto: TextInputLayout
-    private lateinit var editAsunto: TextInputEditText
-    private lateinit var tilMensaje: TextInputLayout
-    private lateinit var editMensaje: TextInputEditText
-    private lateinit var btnEnviar: MaterialButton
+    private lateinit var dropCourse: MaterialAutoCompleteTextView
+    private lateinit var tilCourse: TextInputLayout
+    private lateinit var btnChoose: MaterialButton
+    private lateinit var chipsRecipients: ChipGroup
+    private lateinit var txtNoRecipients: TextView
+    private lateinit var txtToTitle: TextView
+    private lateinit var tilSubject: TextInputLayout
+    private lateinit var editSubject: TextInputEditText
+    private lateinit var tilBody: TextInputLayout
+    private lateinit var editBody: TextInputEditText
+    private lateinit var btnSend: MaterialButton
+    private lateinit var attachments: ListaAdjuntos
 
-    private var cursos: List<Course> = emptyList()
-    private var cursoSel: Course? = null
-    /** Destinatarios posibles del curso elegido (objetos tal cual los da Eminus). */
-    private var disponibles: List<JsonObject> = emptyList()
-    private val elegidos = mutableListOf<JsonObject>()
-    private var idPadre = 0L
-    private var enviando = false
-    private lateinit var adjuntos: com.pako.eminus4.ui.common.ListaAdjuntos
-
-    private val elegirArchivos = registerForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris -> if (uris.isNotEmpty()) adjuntos.agregar(uris) }
+    private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) attachments.agregar(uris)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_compose_message)
-        sessionManager = SessionManager(this)
-        apiClient = EminusApiClient(sessionManager)
-        idPadre = intent.getLongExtra(EXTRA_PADRE, 0L)
-
-        inicializarVistas()
-        cargarCursos()
+        setUpToolbarAndInsets()
+        bindViews()
+        setUpCourses()
+        observe()
     }
 
-    private fun inicializarVistas() {
+    private fun setUpToolbarAndInsets() {
         val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
-        toolbar.title = if (idPadre > 0) "Responder" else "Nuevo mensaje"
-        toolbar.setNavigationOnClickListener { salir() }
-
+        toolbar.title = if (viewModel.isReply) "Responder" else "Nuevo mensaje"
+        toolbar.setNavigationOnClickListener { leave() }
         val appBar = findViewById<View>(R.id.appBarLayout)
-        val barra = findViewById<View>(R.id.barraEnviar)
-        val padBarra = barra.paddingBottom
+        val sendBar = findViewById<View>(R.id.barraEnviar)
+        val sendBarPadding = sendBar.paddingBottom
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.rootRedactar)) { _, insets ->
-            val sb = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-            appBar.setPadding(0, sb.top, 0, 0)
-            barra.setPadding(barra.paddingLeft, barra.paddingTop, barra.paddingRight, padBarra + maxOf(sb.bottom, ime.bottom))
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
+            appBar.setPadding(0, bars.top, 0, 0)
+            sendBar.setPadding(sendBar.paddingLeft, sendBar.paddingTop, sendBar.paddingRight,
+                sendBarPadding + maxOf(bars.bottom, keyboard.bottom))
             insets
         }
-
-        dropMateria = findViewById(R.id.dropMateria)
-        tilMateria = findViewById(R.id.tilMateria)
-        btnAgregar = findViewById(R.id.btnAgregarDestinatarios)
-        chipsDestinatarios = findViewById(R.id.chipsDestinatarios)
-        txtSinDestinatarios = findViewById(R.id.txtSinDestinatarios)
-        tilAsunto = findViewById(R.id.tilAsunto)
-        editAsunto = findViewById(R.id.editAsunto)
-        tilMensaje = findViewById(R.id.tilMensaje)
-        editMensaje = findViewById(R.id.editMensaje)
-        btnEnviar = findViewById(R.id.btnEnviarMensaje)
-
-        intent.getStringExtra(EXTRA_ASUNTO)?.let { editAsunto.setText(it) }
-        btnAgregar.setOnClickListener { elegirDestinatarios() }
-        adjuntos = com.pako.eminus4.ui.common.ListaAdjuntos(this, findViewById(R.id.layoutAdjuntosMensaje))
-        findViewById<View>(R.id.btnAdjuntarMensaje).setOnClickListener { elegirArchivos.launch(arrayOf("*/*")) }
-        btnEnviar.setOnClickListener { enviar() }
-        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() = salir()
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = leave()
         })
     }
 
-    // ===================== MATERIA Y DESTINATARIOS =====================
+    private fun bindViews() {
+        dropCourse = findViewById(R.id.dropMateria)
+        tilCourse = findViewById(R.id.tilMateria)
+        btnChoose = findViewById(R.id.btnAgregarDestinatarios)
+        chipsRecipients = findViewById(R.id.chipsDestinatarios)
+        txtNoRecipients = findViewById(R.id.txtSinDestinatarios)
+        txtToTitle = findViewById(R.id.txtParaTitulo)
+        tilSubject = findViewById(R.id.tilAsunto)
+        editSubject = findViewById(R.id.editAsunto)
+        tilBody = findViewById(R.id.tilMensaje)
+        editBody = findViewById(R.id.editMensaje)
+        btnSend = findViewById(R.id.btnEnviarMensaje)
 
-    /** Igual que Eminus web: solo se puede escribir en cursos vigentes. */
-    private fun cargarCursos() {
-        cursos = sessionManager.getCachedCourses().filter { it.isActivo() }.sortedBy { it.getNombreLimpio() }
-        val nombres = cursos.map { it.getNombreLimpio() }
-        dropMateria.setAdapter(ArrayAdapter(this, android.R.layout.simple_list_item_1, nombres))
-        dropMateria.setOnItemClickListener { _, _, pos, _ -> elegirCurso(cursos[pos]) }
-
-        if (cursos.isEmpty()) {
-            tilMateria.error = "No tienes materias vigentes para escribir"
-            return
-        }
-        val inicial = cursos.firstOrNull { it.idCurso == intent.getLongExtra(EXTRA_CURSO, -1L) }
-            ?: cursos.singleOrNull()
-        inicial?.let {
-            dropMateria.setText(it.getNombreLimpio(), false)
-            elegirCurso(it, preseleccionar = intent.getStringExtra(EXTRA_PARA))
-        }
+        intent.getStringExtra(EXTRA_ASUNTO)?.let { editSubject.setText(it) }
+        btnChoose.setOnClickListener { chooseRecipients() }
+        attachments = ListaAdjuntos(this, findViewById(R.id.layoutAdjuntosMensaje))
+        findViewById<View>(R.id.btnAdjuntarMensaje).setOnClickListener { pickFiles.launch(arrayOf("*/*")) }
+        btnSend.setOnClickListener { send() }
     }
 
-    private fun elegirCurso(c: Course, preseleccionar: String? = null) {
-        if (cursoSel?.idCurso == c.idCurso && disponibles.isNotEmpty()) return
-        cursoSel = c
-        tilMateria.error = null
-        elegidos.clear()
-        disponibles = emptyList()
-        pintarElegidos()
-        btnAgregar.isEnabled = false
-        txtSinDestinatarios.text = "Cargando participantes…"
-        apiClient.getMessageRecipients(c.idCurso) { r ->
-            if (cursoSel?.idCurso != c.idCurso) return@getMessageRecipients
-            r.onSuccess { lista ->
-                val yo = sessionManager.getMatriculaSesion()
-                // Sin uno mismo en la lista
-                disponibles = lista.filter { sessionManager.normalizarMatricula(texto(it, "idUsuario")) != yo }
-                    .sortedBy { nombre(it) }
-                btnAgregar.isEnabled = disponibles.isNotEmpty()
-                preseleccionar?.let { id ->
-                    disponibles.firstOrNull { texto(it, "idUsuario").equals(id, ignoreCase = true) }?.let { elegidos += it }
-                }
-                pintarElegidos()
-            }.onFailure {
-                txtSinDestinatarios.text = "No se pudieron cargar los participantes: ${it.message}"
+    private fun setUpCourses() {
+        val courses = viewModel.state.value.courses
+        dropCourse.setAdapter(ArrayAdapter(this, android.R.layout.simple_list_item_1, courses.map { it.getNombreLimpio() }))
+        dropCourse.setOnItemClickListener { _, _, position, _ -> viewModel.selectCourse(courses[position]) }
+        if (courses.isEmpty()) tilCourse.error = "No tienes materias vigentes para escribir"
+        viewModel.state.value.course?.let { dropCourse.setText(it.getNombreLimpio(), false) }
+    }
+
+    private fun observe() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { viewModel.state.collect(::render) }
+                launch { viewModel.events.collect(::onEvent) }
             }
         }
     }
 
-    private fun texto(o: JsonObject, campo: String): String =
-        o.get(campo)?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
-
-    /** "VIVEROS SALMONES FRANCISCO" → "Viveros Salmones Francisco". */
-    private fun nombre(o: JsonObject): String {
-        val n = listOf("nombre", "nombreCompleto").map { texto(o, it) }.firstOrNull { it.isNotBlank() }
-            ?: texto(o, "correo").ifBlank { texto(o, "idUsuario") }
-        return n.lowercase().split(" ").filter { it.isNotBlank() }
-            .joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
-    }
-
-    private fun elegirDestinatarios() {
-        if (disponibles.isEmpty()) return
-        val nombres = (listOf("Todos los participantes (${disponibles.size})") +
-            disponibles.map { o -> nombre(o) + texto(o, "correo").takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty() })
-            .toTypedArray()
-        val ids = disponibles.map { texto(it, "idUsuario") }
-        val marcados = BooleanArray(nombres.size) { i ->
-            if (i == 0) elegidos.size == disponibles.size
-            else elegidos.any { texto(it, "idUsuario") == ids[i - 1] }
-        }
-        val dialogo = MaterialAlertDialogBuilder(this)
-            .setTitle("¿A quién le escribes?")
-            .setMultiChoiceItems(nombres, marcados) { d, i, checked ->
-                val lista = (d as androidx.appcompat.app.AlertDialog).listView
-                if (i == 0) {
-                    for (k in 1 until nombres.size) { marcados[k] = checked; lista.setItemChecked(k, checked) }
-                } else {
-                    marcados[i] = checked
-                    val todos = (1 until nombres.size).all { marcados[it] }
-                    marcados[0] = todos; lista.setItemChecked(0, todos)
-                }
-            }
-            .setPositiveButton("Listo") { _, _ ->
-                elegidos.clear()
-                disponibles.forEachIndexed { i, o -> if (marcados[i + 1]) elegidos += o }
-                pintarElegidos()
-            }
-            .setNegativeButton("Cancelar", null)
-            .create()
-        dialogo.show()
-    }
-
-    private fun pintarElegidos() {
-        chipsDestinatarios.removeAllViews()
-        elegidos.forEach { o ->
-            chipsDestinatarios.addView(Chip(this).apply {
-                text = nombre(o)
+    private fun render(state: ComposeUiState) {
+        if (state.course != null) tilCourse.error = null
+        btnChoose.isEnabled = state.available.isNotEmpty()
+        chipsRecipients.removeAllViews()
+        state.chosen.forEach { recipient ->
+            chipsRecipients.addView(Chip(this).apply {
+                text = MessageDraft.recipientName(recipient)
                 isCloseIconVisible = true
-                setOnCloseIconClickListener { elegidos.remove(o); pintarElegidos() }
+                setOnCloseIconClickListener { viewModel.remove(recipient) }
             })
         }
-        txtSinDestinatarios.visibility = if (elegidos.isEmpty()) View.VISIBLE else View.GONE
-        txtSinDestinatarios.text = when {
-            cursoSel == null -> "Primero elige la materia."
-            disponibles.isEmpty() -> txtSinDestinatarios.text
+        txtNoRecipients.visibility = if (state.chosen.isEmpty()) View.VISIBLE else View.GONE
+        txtNoRecipients.text = when {
+            state.course == null -> "Primero elige la materia."
+            state.loadingRecipients -> "Cargando participantes…"
+            state.recipientsError != null -> "No se pudieron cargar los participantes: ${state.recipientsError}"
             else -> "Toca \"Elegir\" para seleccionar a quién escribirle."
         }
-        findViewById<TextView>(R.id.txtParaTitulo).text =
-            if (elegidos.isEmpty()) "Para" else "Para · ${elegidos.size}"
+        txtToTitle.text = if (state.chosen.isEmpty()) "Para" else "Para · ${state.chosen.size}"
+        btnSend.isEnabled = !state.sending
+        btnSend.text = when {
+            !state.sending -> "Enviar"
+            state.sendingFiles -> "Subiendo archivos y enviando…"
+            else -> "Enviando…"
+        }
     }
 
-    // ===================== ENVIAR =====================
-
-    private fun enviar() {
-        if (enviando) return
-        val asunto = editAsunto.text?.toString()?.trim().orEmpty()
-        val mensaje = editMensaje.text?.toString()?.trim().orEmpty()
-        tilAsunto.error = null; tilMensaje.error = null
-        when {
-            cursoSel == null -> { tilMateria.error = "Elige la materia"; return }
-            elegidos.isEmpty() -> { Toast.makeText(this, "Elige al menos un destinatario", Toast.LENGTH_SHORT).show(); return }
-            asunto.isEmpty() -> { tilAsunto.error = "Escribe un asunto"; return }
-            mensaje.isEmpty() -> { tilMensaje.error = "Escribe tu mensaje"; return }
+    /** Lista con casillas; la primera ("Todos los participantes") marca o desmarca a todos. */
+    private fun chooseRecipients() {
+        val state = viewModel.state.value
+        val available = state.available
+        if (available.isEmpty()) return
+        val labels = (listOf("Todos los participantes (${available.size})") + available.map { o ->
+            MessageDraft.recipientName(o) + MessageDraft.recipientEmail(o).takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty()
+        }).toTypedArray()
+        val chosenIds = state.chosen.map(MessageDraft::recipientId).toSet()
+        val checked = BooleanArray(labels.size) { i ->
+            if (i == 0) state.chosen.size == available.size else MessageDraft.recipientId(available[i - 1]) in chosenIds
         }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("¿A quién le escribes?")
+            .setMultiChoiceItems(labels, checked) { dialog, index, isChecked ->
+                val list = (dialog as AlertDialog).listView
+                if (index == 0) {
+                    for (k in 1 until labels.size) { checked[k] = isChecked; list.setItemChecked(k, isChecked) }
+                } else {
+                    checked[index] = isChecked
+                    val all = (1 until labels.size).all { checked[it] }
+                    checked[0] = all
+                    list.setItemChecked(0, all)
+                }
+            }
+            .setPositiveButton("Listo") { _, _ -> viewModel.setChosen(available.filterIndexed { i, _ -> checked[i + 1] }) }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun send() {
+        val subject = editSubject.text?.toString().orEmpty()
+        val body = editBody.text?.toString().orEmpty()
+        tilSubject.error = null
+        tilBody.error = null
+        viewModel.problem(subject, body)?.let { showProblem(it); return }
         // Copiar adjuntos a caché antes de enviar (los Uri del selector pueden caducar)
-        val listos = try { adjuntos.prepararParaSubir() } catch (e: Exception) {
+        val ready = try {
+            attachments.prepararParaSubir()
+        } catch (e: Exception) {
             Toast.makeText(this, "No se pudo leer un archivo: ${e.message}", Toast.LENGTH_LONG).show()
             return
         }
-        enviando = true
-        btnEnviar.isEnabled = false
-        btnEnviar.text = if (listos.isEmpty()) "Enviando…" else "Subiendo archivos y enviando…"
-        apiClient.sendMessage(asunto, aHtml(mensaje), elegidos.toList(), idPadre, listos) { r ->
-            com.pako.eminus4.util.Adjuntos.borrar(listos)
-            enviando = false
-            btnEnviar.isEnabled = true
-            btnEnviar.text = "Enviar"
-            r.onSuccess {
+        viewModel.send(subject, body, ready.map { EminusHttp.UploadFile(it.archivo, it.nombre, it.mime) }) { Adjuntos.borrar(ready) }
+    }
+
+    private fun showProblem(problem: MessageDraft.Problem) = when (problem) {
+        MessageDraft.Problem.NO_COURSE -> tilCourse.error = "Elige la materia"
+        MessageDraft.Problem.NO_RECIPIENTS -> Toast.makeText(this, "Elige al menos un destinatario", Toast.LENGTH_SHORT).show()
+        MessageDraft.Problem.NO_SUBJECT -> tilSubject.error = "Escribe un asunto"
+        MessageDraft.Problem.NO_BODY -> tilBody.error = "Escribe tu mensaje"
+    }
+
+    private fun onEvent(event: ComposeEvent) {
+        when (event) {
+            ComposeEvent.Sent -> {
                 Toast.makeText(this, "Mensaje enviado", Toast.LENGTH_SHORT).show()
                 setResult(RESULT_OK)
                 finish()
-            }.onFailure {
-                val detalle = if (it.message?.contains("401") == true) "tu sesión caducó, renuévala" else it.message
-                Toast.makeText(this, "No se pudo enviar: $detalle", Toast.LENGTH_LONG).show()
             }
+            is ComposeEvent.Invalid -> showProblem(event.problem)
+            is ComposeEvent.Failed -> Toast.makeText(this, "No se pudo enviar: ${event.reason}", Toast.LENGTH_LONG).show()
         }
     }
 
-    /** Texto plano → HTML como lo guarda el editor de Eminus. */
-    private fun aHtml(texto: String): String {
-        val esc = texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        return esc.split(Regex("\n{2,}")).joinToString("") { "<p>" + it.replace("\n", "<br>") + "</p>" }
-    }
-
     /** Si ya escribió algo, confirmar antes de descartar. */
-    private fun salir() {
-        val escrito = !editMensaje.text.isNullOrBlank() || adjuntos.archivos.isNotEmpty() ||
-            (!editAsunto.text.isNullOrBlank() && editAsunto.text.toString() != intent.getStringExtra(EXTRA_ASUNTO))
-        if (!escrito || enviando) { finish(); return }
+    private fun leave() {
+        val wroteSomething = !editBody.text.isNullOrBlank() || attachments.archivos.isNotEmpty() ||
+            (!editSubject.text.isNullOrBlank() && editSubject.text.toString() != intent.getStringExtra(EXTRA_ASUNTO))
+        if (!wroteSomething || viewModel.state.value.sending) {
+            finish()
+            return
+        }
         MaterialAlertDialogBuilder(this)
             .setTitle("¿Descartar mensaje?")
             .setMessage("Lo que escribiste no se guardará.")

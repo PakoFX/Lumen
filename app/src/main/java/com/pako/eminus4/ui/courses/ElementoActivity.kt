@@ -10,7 +10,15 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.pako.eminus4.appContainer
+import kotlinx.coroutines.launch
 import androidx.core.content.ContextCompat
 import androidx.core.text.HtmlCompat
 import androidx.core.view.ViewCompat
@@ -19,14 +27,12 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.gson.Gson
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
 import com.pako.eminus4.data.model.ContentElement
 import com.pako.eminus4.ui.viewer.FileViewerActivity
 import coil.load
 import coil.transform.CircleCropTransformation
 import com.pako.eminus4.util.HtmlEminus
-import com.pako.eminus4.util.Plazos
+import com.pako.eminus4.domain.DueDates
 import com.pako.eminus4.util.iconoInicio
 
 /**
@@ -49,12 +55,12 @@ class ElementoActivity : AppCompatActivity() {
             }
     }
 
-    private lateinit var api: EminusApiClient
     private lateinit var e: ContentElement
     private var idCurso = 0L
-    private var leido = false
-    private var meGusta = false
-    private var likes = 0
+
+    private val viewModel: ElementViewModel by viewModels {
+        viewModelFactory { initializer { ElementViewModel(appContainer.courseSectionsRepository, idCurso, e) } }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,8 +68,6 @@ class ElementoActivity : AppCompatActivity() {
         idCurso = intent.getLongExtra(EXTRA_CURSO, 0L)
         e = try { Gson().fromJson(intent.getStringExtra(EXTRA_ELEMENTO), ContentElement::class.java) } catch (_: Exception) { null }
             ?: run { finish(); return }
-        api = EminusApiClient(SessionManager(this))
-        leido = e.leido; meGusta = e.usuarioLike == 1; likes = e.likes
 
         val toolbar = findViewById<MaterialToolbar>(R.id.toolbarElemento)
         toolbar.title = intent.getStringExtra(EXTRA_UNIDAD) ?: "Contenido"
@@ -74,8 +78,8 @@ class ElementoActivity : AppCompatActivity() {
         }
 
         findViewById<TextView>(R.id.txtElemTitulo).text = e.nombre ?: "Elemento"
-        findViewById<TextView>(R.id.txtElemFecha).text = Plazos.parseIso(e.fechaPublicacion)
-            ?.let { "Publicado el ${Plazos.fechaCorta(it)}" }.orEmpty() +
+        findViewById<TextView>(R.id.txtElemFecha).text = DueDates.parseEminusDate(e.fechaPublicacion)
+            ?.let { "Publicado el ${DueDates.shortDate(it)}" }.orEmpty() +
             if (e.lecturaObligatoria == 1) "  ·  Lectura obligatoria" else ""
 
         // Texto del profe como HTML real (enlaces, imágenes, YouTube, audio), no como texto plano
@@ -117,11 +121,38 @@ class ElementoActivity : AppCompatActivity() {
             })
         }
 
-        pintarComentarios()
         findViewById<View>(R.id.btnElemEnviar).setOnClickListener { enviarComentario() }
-        pintarAcciones()
-        findViewById<MaterialButton>(R.id.btnElemLeido).setOnClickListener { marcarLeido() }
-        findViewById<MaterialButton>(R.id.btnElemLike).setOnClickListener { alternarLike() }
+        findViewById<MaterialButton>(R.id.btnElemLeido).setOnClickListener { viewModel.markRead() }
+        findViewById<MaterialButton>(R.id.btnElemLike).setOnClickListener { viewModel.toggleLike() }
+        observe()
+    }
+
+    private fun observe() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    viewModel.state.collect { state ->
+                        e = state.element
+                        pintarComentarios()
+                        pintarAcciones(state)
+                    }
+                }
+                launch { viewModel.events.collect(::onEvent) }
+            }
+        }
+    }
+
+    private fun onEvent(event: ElementEvent) {
+        when (event) {
+            is ElementEvent.Message ->
+                Toast.makeText(this, event.text, if (event.long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+            ElementEvent.Changed -> setResult(RESULT_CAMBIO)
+            ElementEvent.CommentPosted -> findViewById<android.widget.EditText>(R.id.editElemComentario).let { edit ->
+                edit.setText("")
+                (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                    .hideSoftInputFromWindow(edit.windowToken, 0)
+            }
+        }
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -172,28 +203,11 @@ class ElementoActivity : AppCompatActivity() {
         }
     }
 
-    /** Publica el comentario escrito y vuelve a pedir el elemento para mostrarlo. */
     private fun enviarComentario() {
         val edit = findViewById<android.widget.EditText>(R.id.editElemComentario)
-        val btn = findViewById<View>(R.id.btnElemEnviar)
-        val texto = edit.text?.toString()?.trim().orEmpty()
-        if (texto.isEmpty()) { edit.error = "Escribe algo primero"; return }
-        btn.isEnabled = false; btn.alpha = 0.4f
-        api.commentElement(idCurso, e.idElemento, texto) { r ->
-            r.onSuccess {
-                edit.setText("")
-                (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
-                    .hideSoftInputFromWindow(edit.windowToken, 0)
-                setResult(RESULT_CAMBIO)
-                Toast.makeText(this, "Comentario publicado", Toast.LENGTH_SHORT).show()
-                api.getContentElement(idCurso, e.idUnidad, e.idElemento) { re ->
-                    re.getOrNull()?.let { nuevo -> e = nuevo; pintarComentarios() }
-                }
-            }.onFailure {
-                Toast.makeText(this, "No se pudo publicar: ${it.message}", Toast.LENGTH_LONG).show()
-            }
-            btn.isEnabled = true; btn.alpha = 1f
-        }
+        val text = edit.text?.toString()?.trim().orEmpty()
+        if (text.isEmpty()) { edit.error = "Escribe algo primero"; return }
+        viewModel.comment(text)
     }
 
     /** Comentarios del elemento + caja para escribir uno. */
@@ -222,7 +236,7 @@ class ElementoActivity : AppCompatActivity() {
                     orientation = LinearLayout.VERTICAL
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10) }
                     addView(TextView(this@ElementoActivity).apply {
-                        text = listOfNotNull(c.nombreBonito(), Plazos.parseIso(c.fechaPublicacion)?.let { Plazos.fechaCorta(it) })
+                        text = listOfNotNull(c.nombreBonito(), DueDates.parseEminusDate(c.fechaPublicacion)?.let { DueDates.shortDate(it) })
                             .joinToString(" · ")
                         textSize = 12f
                         setTextColor(ContextCompat.getColor(this@ElementoActivity, R.color.text_secondary))
@@ -238,40 +252,18 @@ class ElementoActivity : AppCompatActivity() {
         }
     }
 
-    private fun pintarAcciones() {
+    private fun pintarAcciones(state: ElementUiState) {
         findViewById<MaterialButton>(R.id.btnElemLeido).apply {
-            isEnabled = !leido
-            text = if (leido) "Leído" else "Marcar como leído"
+            isEnabled = !state.read && !state.markingRead
+            text = if (state.read) "Leído" else "Marcar como leído"
         }
         findViewById<MaterialButton>(R.id.btnElemLike).apply {
-            text = if (likes > 0) "$likes" else "Me gusta"
-            setIconResource(if (meGusta) R.drawable.ic_thumb_up_filled else R.drawable.ic_thumb_up)
+            text = if (state.likes > 0) "${state.likes}" else "Me gusta"
+            setIconResource(if (state.liked) R.drawable.ic_thumb_up_filled else R.drawable.ic_thumb_up)
         }
-    }
-
-    private fun marcarLeido() {
-        findViewById<MaterialButton>(R.id.btnElemLeido).isEnabled = false
-        api.markElementRead(idCurso, e.idElemento) { r ->
-            r.onSuccess {
-                leido = true
-                setResult(RESULT_CAMBIO)
-                Toast.makeText(this, "Marcado como leído", Toast.LENGTH_SHORT).show()
-            }.onFailure { Toast.makeText(this, "No se pudo marcar: ${it.message}", Toast.LENGTH_LONG).show() }
-            pintarAcciones()
-        }
-    }
-
-    private fun alternarLike() {
-        meGusta = !meGusta
-        likes = (likes + if (meGusta) 1 else -1).coerceAtLeast(0)
-        pintarAcciones()
-        api.likeElement(idCurso, e.idElemento) { r ->
-            if (r.isFailure) {
-                meGusta = !meGusta
-                likes = (likes + if (meGusta) 1 else -1).coerceAtLeast(0)
-                pintarAcciones()
-                Toast.makeText(this, "No se pudo registrar el me gusta", Toast.LENGTH_SHORT).show()
-            } else setResult(RESULT_CAMBIO)
+        findViewById<View>(R.id.btnElemEnviar).apply {
+            isEnabled = !state.sendingComment
+            alpha = if (state.sendingComment) 0.4f else 1f
         }
     }
 }

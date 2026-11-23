@@ -1,7 +1,6 @@
 package com.pako.eminus4.ui.notifications
 
 import android.os.Bundle
-import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -14,16 +13,24 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.coroutines.launch
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.AgendaLoader
-import com.pako.eminus4.data.api.EminusApiClient
+import com.pako.eminus4.appContainer
+import com.pako.eminus4.data.repository.AgendaRepository.Agenda
+import com.pako.eminus4.domain.ExamRules
+import com.pako.eminus4.notificaciones.AlarmReminderUpdater
 import com.pako.eminus4.data.model.Course
 import com.pako.eminus4.data.model.CourseActivityItem
-import com.pako.eminus4.data.model.EstadoAlumno
+import com.pako.eminus4.domain.StudentStatus
 import com.pako.eminus4.data.model.ExamItem
 import com.pako.eminus4.data.model.ForumItem
 import com.pako.eminus4.data.model.MessageItem
@@ -33,7 +40,7 @@ import com.pako.eminus4.ui.forums.ForumsActivity
 import com.pako.eminus4.ui.main.MainActivity
 import com.pako.eminus4.ui.messages.MessageDetailActivity
 import com.pako.eminus4.ui.messages.MessagesActivity
-import com.pako.eminus4.util.Plazos
+import com.pako.eminus4.domain.DueDates
 import com.pako.eminus4.util.iconoInicio
 import java.util.concurrent.TimeUnit
 
@@ -52,12 +59,16 @@ class NotificationsFragment : Fragment() {
         private const val MAX_NOVEDADES = 8
         private val DIAS_CALIFICACION_RECIENTE = TimeUnit.DAYS.toMillis(14)
         private val HORAS_URGENTE = TimeUnit.HOURS.toMillis(96)  // "vence en 3 días" también cuenta como pronto
-        private const val RECARGA_MIN_MS = 60_000L
     }
 
-    private lateinit var sessionManager: SessionManager
-    private lateinit var apiClient: EminusApiClient
-    private lateinit var loader: AgendaLoader
+    private val viewModel: NotificationsViewModel by viewModels {
+        viewModelFactory {
+            initializer {
+                val container = requireContext().appContainer
+                NotificationsViewModel(container.agendaRepository, AlarmReminderUpdater(requireContext().applicationContext))
+            }
+        }
+    }
 
     private lateinit var swipeRefreshLayout: SwipeRefreshLayout
     private lateinit var txtHoy: TextView
@@ -90,15 +101,13 @@ class NotificationsFragment : Fragment() {
     private lateinit var seccionPorMateria: View
     private lateinit var layoutPorMateria: LinearLayout
 
-    /** Datos cargados (sin filtrar). Se repinta todo con el filtro de materia actual. */
-    private var agenda: AgendaLoader.Resultado? = null
+    /** Datos cargados (los pone [render] desde el ViewModel). */
+    private var agenda: Agenda? = null
     private var examenesDatos: List<ExamItem> = emptyList()
     private var forosDatos: List<ForumItem> = emptyList()
     private var mensajesDatos: List<MessageItem> = emptyList()
-    /** null = todas las materias. */
-    private var materiaSel: Long? = null
 
-    /** Qué fuentes cargaron completas desde Eminus (solo con esas se programan recordatorios y novedades). */
+    /** Qué fuentes cargaron completas desde Eminus (solo con esas se calculan novedades). */
     private var agendaOk = false
     private var examenesOk = false
     private var forosOk = false
@@ -108,31 +117,48 @@ class NotificationsFragment : Fragment() {
     private lateinit var txtTituloNovedades: TextView
     private lateinit var layoutNovedades: LinearLayout
 
-    /** Evita pintar resultados viejos si se lanzó otra carga mientras tanto. */
-    private var generacion = 0
-    private var cargando = false
-    private var ultimaCarga = 0L
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? =
         inflater.inflate(R.layout.fragment_notifications, container, false)
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        sessionManager = SessionManager(requireContext())
-        apiClient = EminusApiClient(sessionManager)
-        loader = AgendaLoader(sessionManager, apiClient)
         inicializarVistas(view)
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.state.collect(::render) }
+        }
     }
 
     override fun onResume() {
         super.onResume()
         // Al volver de un detalle (p. ej. tras entregar) o en la primera carga
-        if (!isHidden || ultimaCarga == 0L) cargar()
+        txtHoy.text = DueDates.todayLong()
+        if (!isHidden) viewModel.load() else viewModel.refreshIfStale()
     }
 
     override fun onHiddenChanged(hidden: Boolean) {
         super.onHiddenChanged(hidden)
-        if (!hidden && SystemClock.elapsedRealtime() - ultimaCarga > RECARGA_MIN_MS) cargar()
+        if (!hidden) viewModel.refreshIfStale()
+    }
+
+    /** Copia el estado del ViewModel a lo que usan las funciones de pintado y repinta. */
+    private fun render(state: NoticesUiState) {
+        swipeRefreshLayout.isRefreshing = state.loading
+        val r = state.agenda ?: return
+        agenda = r
+        agendaOk = state.agendaComplete
+        examenesDatos = state.exams?.items.orEmpty()
+        examenesOk = state.examsComplete
+        forosDatos = state.forums?.items.orEmpty()
+        forosOk = state.forumsComplete
+        mensajesDatos = state.unreadMessages?.items.orEmpty()
+        mensajesOk = state.messagesComplete
+        // Contadores del menú: siempre globales
+        ponerContador(MainActivity.Contador.ACTIVIDADES, r.activities.count { it.activity.studentStatus.isPending })
+        state.unreadMessages?.let { ponerContador(MainActivity.Contador.MENSAJES, it.items.size) }
+        state.exams?.let { ponerContador(MainActivity.Contador.EXAMENES, state.availableExams.size) }
+        state.forums?.let { ponerContador(MainActivity.Contador.FOROS, state.forumsWithNews.size) }
+        repintar()
     }
 
     private fun inicializarVistas(view: View) {
@@ -165,7 +191,7 @@ class NotificationsFragment : Fragment() {
         layoutNovedades = view.findViewById(R.id.layoutNovedades)
         view.findViewById<View>(R.id.btnMarcarVisto).setOnClickListener { marcarNovedadesVistas() }
 
-        txtHoy.text = Plazos.hoyLargo()
+        txtHoy.text = DueDates.todayLong()
 
         btnVerMasPorHacer.setOnClickListener { PendientesActivity.start(requireContext()) }
         // Resumen: tres números que abren el desglose
@@ -184,138 +210,18 @@ class NotificationsFragment : Fragment() {
         // barra superior (MainActivity); aquí solo se calculan sus contadores.
 
         swipeRefreshLayout.setColorSchemeColors(ContextCompat.getColor(requireContext(), R.color.brand_uv_green))
-        swipeRefreshLayout.setOnRefreshListener { cargar(forzar = true) }
+        swipeRefreshLayout.setOnRefreshListener { viewModel.load(force = true) }
     }
-
-    // ===================== CARGA =====================
-
-    private fun cargar(forzar: Boolean = false) {
-        if (cargando && !forzar) return
-        cargando = true
-        val gen = ++generacion
-        swipeRefreshLayout.isRefreshing = true
-        txtHoy.text = Plazos.hoyLargo()
-
-        loader.cargar { r ->
-            if (!vigente(gen)) return@cargar
-            cargando = false
-            ultimaCarga = SystemClock.elapsedRealtime()
-            swipeRefreshLayout.isRefreshing = false
-
-            pintarAgenda(r)
-            cargarNovedades(gen, r.cursos)
-        }
-    }
-
-    private fun vigente(gen: Int) = gen == generacion && isAdded && view != null
-
-    private fun cargarNovedades(gen: Int, cursos: List<Course>) {
-        apiClient.getMessages(folderId = 1) { res ->
-            if (!vigente(gen)) return@getMessages
-            pintarMensajes(res.getOrNull()?.filter { it.esNoLeido } ?: emptyList(), ok = res.isSuccess)
-        }
-
-        // Exámenes: solo cursos que los tienen
-        val conExamenes = cursos.filter { it.examenes > 0 }
-        val examenes = mutableListOf<ExamItem>()
-        var pendExamenes = conExamenes.size
-        var erroresExamenes = 0
-        if (pendExamenes == 0) pintarExamenes(emptyList(), ok = true)
-        for (c in conExamenes) {
-            apiClient.getExams(c.idCurso) { res ->
-                if (!vigente(gen)) return@getExams
-                if (res.isFailure) erroresExamenes++
-                res.getOrNull()?.forEach {
-                    it.idCurso = c.idCurso
-                    it.nombreCurso = c.getNombreLimpio()
-                    examenes.add(it)
-                }
-                if (--pendExamenes == 0) pintarExamenes(examenes, ok = erroresExamenes == 0)
-            }
-        }
-
-        // Foros: solo cursos que los tienen
-        val conForos = cursos.filter { it.foros > 0 }
-        val foros = mutableListOf<ForumItem>()
-        var pendForos = conForos.size
-        var erroresForos = 0
-        if (pendForos == 0) pintarForos(emptyList(), ok = true)
-        for (c in conForos) {
-            apiClient.getForums(c.idCurso) { res ->
-                if (!vigente(gen)) return@getForums
-                if (res.isFailure) erroresForos++
-                res.getOrNull()?.forEach {
-                    it.idCurso = c.idCurso
-                    it.nombreCurso = c.getNombreLimpio()
-                    it.cursoActivo = c.isActivo()
-                    foros.add(it)
-                }
-                if (--pendForos == 0) pintarForos(foros, ok = erroresForos == 0)
-            }
-        }
-    }
-
-    // ===================== DATOS (sin filtrar) → REPINTAR =====================
-
-    private fun pintarAgenda(r: AgendaLoader.Resultado) {
-        agenda = r
-        // Solo con datos completos y frescos (si faltan cursos, no borrar recordatorios buenos)
-        agendaOk = !r.desdeCache && !r.sesionExpirada && r.cursosConError == 0
-        if (agendaOk) com.pako.eminus4.notificaciones.Recordatorios.actualizarTareas(requireContext(), r.actividades)
-        // Contador del menú: siempre global
-        ponerContador(MainActivity.Contador.ACTIVIDADES, r.actividades.count { it.activity.estadoAlumno.esPendiente })
-        repintar()
-    }
-
-    private fun pintarMensajes(noLeidos: List<MessageItem>, ok: Boolean) {
-        mensajesDatos = noLeidos
-        mensajesOk = ok
-        ponerContador(MainActivity.Contador.MENSAJES, noLeidos.size)
-        repintar()
-    }
-
-    private fun pintarExamenes(examenes: List<ExamItem>, ok: Boolean) {
-        examenesDatos = examenes
-        examenesOk = ok && agendaOk
-        if (examenesOk) com.pako.eminus4.notificaciones.Recordatorios.actualizarExamenes(requireContext(), examenes)
-        ponerContador(MainActivity.Contador.EXAMENES, examenesDisponibles(examenes).size)
-        repintar()
-    }
-
-    private fun pintarForos(foros: List<ForumItem>, ok: Boolean) {
-        forosDatos = foros
-        forosOk = ok && agendaOk
-        if (forosOk) com.pako.eminus4.notificaciones.Recordatorios.actualizarForos(requireContext(), foros)
-        ponerContador(MainActivity.Contador.FOROS, forosConNovedades(foros).size)
-        repintar()
-    }
-
-    private fun examenesDisponibles(examenes: List<ExamItem>): List<ExamItem> {
-        val ahora = System.currentTimeMillis()
-        return examenes
-            .filter { !it.estaCalificado && !it.estaVencido }
-            .filter { (Plazos.parseIso(it.fechaInicio) ?: 0L) <= ahora }
-            .sortedBy { Plazos.parseIso(it.fechaTermino) ?: Long.MAX_VALUE }
-    }
-
-    private fun forosConNovedades(foros: List<ForumItem>) =
-        foros.filter { it.nuevosComentarios > 0 }.sortedByDescending { it.nuevosComentarios }
 
     /** Repinta todas las secciones aplicando el filtro de materia. */
     private fun repintar() {
         val r = agenda ?: return
         if (!isAdded || view == null) return
-        // Tocar una materia ya no filtra Avisos: abre Pendientes (pantalla aparte)
-        materiaSel = null
+        // Tocar una materia no filtra Avisos: abre Pendientes (pantalla aparte)
         val curso: Course? = null
-        AvisosDatos.cursos = r.cursos
-        AvisosDatos.actividades = r.actividades
-        AvisosDatos.examenesDisponibles = examenesDisponibles(examenesDatos)
-        AvisosDatos.forosNuevos = forosConNovedades(forosDatos)
-        AvisosDatos.mensajesNoLeidos = mensajesDatos
 
         pintarNovedades(r, curso)
-        val acts = if (curso == null) r.actividades else r.actividades.filter { it.courseId == curso.idCurso }
+        val acts = if (curso == null) r.activities else r.activities.filter { it.courseId == curso.idCurso }
         pintarSeccionesAgenda(r, acts, curso)
         pintarPorMateria(r, visible = curso == null)
         pintarSeccionMensajes(if (curso == null) mensajesDatos else mensajesDatos.filter { esDeMateria(it, curso) })
@@ -329,15 +235,15 @@ class NotificationsFragment : Fragment() {
     // ===================== NOVEDADES DESDE LA ÚLTIMA VISITA =====================
 
     /** Las fuentes que no cargaron completas se pasan como null (no se comparan). */
-    private fun calcularNovedades(r: AgendaLoader.Resultado) = com.pako.eminus4.notificaciones.Novedades.calcular(
+    private fun calcularNovedades(r: Agenda) = com.pako.eminus4.notificaciones.Novedades.calcular(
         requireContext(),
-        acts = r.actividades.takeIf { agendaOk },
+        acts = r.activities.takeIf { agendaOk },
         exams = examenesDatos.takeIf { examenesOk },
         foros = forosDatos.takeIf { forosOk },
         msgs = mensajesDatos.takeIf { mensajesOk }
     )
 
-    private fun pintarNovedades(r: AgendaLoader.Resultado, curso: Course?) {
+    private fun pintarNovedades(r: Agenda, curso: Course?) {
         val todas = calcularNovedades(r)
         ponerContador(MainActivity.Contador.NOVEDADES, todas.size)
         val lista = if (curso == null) todas else todas.filter {
@@ -367,7 +273,7 @@ class NotificationsFragment : Fragment() {
                     val act = a!!.activity
                     agregarFila(layoutNovedades, R.drawable.ic_assignment, R.color.brand_uv_green,
                         "Nueva actividad: ${act.nombre}",
-                        "${a.courseName} · ${Plazos.plazo(act.terminoMillis).texto.replaceFirstChar { it.lowercase() }}",
+                        "${a.courseName} · ${DueDates.dueDate(act.terminoMillis).text.replaceFirstChar { it.lowercase() }}",
                         null, null
                     ) { ActividadCardBinder.abrirDetalle(ctx, a) }
                 }
@@ -375,7 +281,7 @@ class NotificationsFragment : Fragment() {
                     val e = n.examen!!
                     agregarFila(layoutNovedades, R.drawable.ic_quiz, R.color.brand_uv_green,
                         "Nuevo examen: ${e.titulo}",
-                        "${e.nombreCurso} · ${Plazos.plazo(Plazos.parseIso(e.fechaTermino)).texto.replace("Vence", "cierra").replace("Venció", "cerró")}",
+                        "${e.nombreCurso} · ${DueDates.dueDate(DueDates.parseEminusDate(e.fechaTermino)).text.replace("Vence", "cierra").replace("Venció", "cerró")}",
                         null, null
                     ) { ExamsActivity.start(ctx) }
                 }
@@ -409,7 +315,7 @@ class NotificationsFragment : Fragment() {
         val r = agenda ?: return
         com.pako.eminus4.notificaciones.Novedades.marcarVisto(
             requireContext(),
-            acts = r.actividades.takeIf { agendaOk },
+            acts = r.activities.takeIf { agendaOk },
             exams = examenesDatos.takeIf { examenesOk },
             foros = forosDatos.takeIf { forosOk },
             msgs = mensajesDatos.takeIf { mensajesOk }
@@ -430,19 +336,19 @@ class NotificationsFragment : Fragment() {
         val total get() = porHacer.size + examenes + foros + mensajes
     }
 
-    private fun resumenes(r: AgendaLoader.Resultado): List<ResumenMateria> {
-        val examenesDisp = examenesDisponibles(examenesDatos)
-        val forosNuevos = forosConNovedades(forosDatos)
-        return r.cursos.map { c ->
-            val acts = r.actividades.filter { it.courseId == c.idCurso }
+    private fun resumenes(r: Agenda): List<ResumenMateria> {
+        val examenesDisp = ExamRules.availableByClosing(examenesDatos)
+        val forosNuevos = forumsWithNews(forosDatos)
+        return r.courses.map { c ->
+            val acts = r.activities.filter { it.courseId == c.idCurso }
             ResumenMateria(
                 curso = c,
-                porHacer = acts.filter { it.activity.estadoAlumno.esPendiente }
+                porHacer = acts.filter { it.activity.studentStatus.isPending }
                     .sortedBy { it.activity.terminoMillis ?: Long.MAX_VALUE },
                 examenes = examenesDisp.count { it.idCurso == c.idCurso },
                 foros = forosNuevos.count { it.idCurso == c.idCurso },
                 mensajes = mensajesDatos.count { esDeMateria(it, c) },
-                esperando = acts.count { it.activity.estadoAlumno == EstadoAlumno.ESPERANDO }
+                esperando = acts.count { it.activity.studentStatus == StudentStatus.AWAITING_GRADE }
             )
         }.sortedWith(compareByDescending<ResumenMateria> { it.total }
             .thenBy { it.porHacer.firstOrNull()?.activity?.terminoMillis ?: Long.MAX_VALUE }
@@ -450,7 +356,7 @@ class NotificationsFragment : Fragment() {
     }
 
     /** Tarjetas por materia (solo con "Todas"): color, contadores y lo próximo que vence. */
-    private fun pintarPorMateria(r: AgendaLoader.Resultado, visible: Boolean) {
+    private fun pintarPorMateria(r: Agenda, visible: Boolean) {
         layoutPorMateria.removeAllViews()
         val lista = resumenes(r)
         seccionPorMateria.visibility = if (visible && lista.size > 1) View.VISIBLE else View.GONE
@@ -463,7 +369,7 @@ class NotificationsFragment : Fragment() {
                 card.findViewById<View>(R.id.viewColorMateria)
                     .setBackgroundColor(android.graphics.Color.parseColor(m.curso.getColorHexaLimpio()))
             } catch (_: Exception) { }
-            card.findViewById<TextView>(R.id.txtMateria).text = com.pako.eminus4.util.NombreMateria.bonito(m.curso.getNombreLimpio())
+            card.findViewById<TextView>(R.id.txtMateria).text = com.pako.eminus4.domain.SubjectName.displayName(m.curso.getNombreLimpio())
 
             val grupo = card.findViewById<ViewGroup>(R.id.grupoContadores)
             fun pildora(texto: String, @ColorRes color: Int, @DrawableRes icono: Int) {
@@ -492,7 +398,7 @@ class NotificationsFragment : Fragment() {
             m.porHacer.firstOrNull()?.let { prox ->
                 card.findViewById<TextView>(R.id.txtProximo).apply {
                     visibility = View.VISIBLE
-                    text = "Próximo: ${prox.activity.nombre} · ${Plazos.plazo(prox.activity.terminoMillis).texto.replaceFirstChar { it.lowercase() }}"
+                    text = "Próximo: ${prox.activity.nombre} · ${DueDates.dueDate(prox.activity.terminoMillis).text.replaceFirstChar { it.lowercase() }}"
                 }
             }
             card.setOnClickListener { PendientesActivity.start(ctx, m.curso.idCurso) }
@@ -502,21 +408,21 @@ class NotificationsFragment : Fragment() {
 
     // ===================== AGENDA (filtrada) =====================
 
-    private fun pintarSeccionesAgenda(r: AgendaLoader.Resultado, actividades: List<CourseActivityItem>, curso: Course?) {
+    private fun pintarSeccionesAgenda(r: Agenda, actividades: List<CourseActivityItem>, curso: Course?) {
         val ctx = requireContext()
         val ahora = System.currentTimeMillis()
         val porHacer = actividades
-            .filter { it.activity.estadoAlumno.esPendiente }
+            .filter { it.activity.studentStatus.isPending }
             .sortedBy { it.activity.terminoMillis ?: Long.MAX_VALUE }
         val urgentes = porHacer.count { a ->
             a.activity.terminoMillis?.let { it - ahora in 0..HORAS_URGENTE } == true
         }
         val enEquipo = porHacer.count { it.activity.esPorEquipos }
-        val esperando = actividades.count { it.activity.estadoAlumno == EstadoAlumno.ESPERANDO }
-        val enMateria = curso?.let { " en ${com.pako.eminus4.util.NombreMateria.bonito(it.getNombreLimpio())}" } ?: ""
+        val esperando = actividades.count { it.activity.studentStatus == StudentStatus.AWAITING_GRADE }
+        val enMateria = curso?.let { " en ${com.pako.eminus4.domain.SubjectName.displayName(it.getNombreLimpio())}" } ?: ""
 
         // ---- Resumen ----
-        val sinDatos = r.cursos.isEmpty() && r.actividades.isEmpty()
+        val sinDatos = r.courses.isEmpty() && r.activities.isEmpty()
         layoutResumenStats.visibility = if (sinDatos) View.GONE else View.VISIBLE
         layoutResumenEstado.visibility = if (sinDatos) View.VISIBLE else View.GONE
         txtResumenProximo.visibility = if (sinDatos) View.GONE else View.VISIBLE
@@ -532,11 +438,11 @@ class NotificationsFragment : Fragment() {
             numero(statRevision, esperando, R.color.badge_info_text)
             val prox = porHacer.firstOrNull()
             txtResumenProximo.text = when {
-                prox != null -> "Lo próximo: ${prox.activity.nombre} · ${Plazos.plazo(prox.activity.terminoMillis).texto.replaceFirstChar { it.lowercase() }}"
+                prox != null -> "Lo próximo: ${prox.activity.nombre} · ${DueDates.dueDate(prox.activity.terminoMillis).text.replaceFirstChar { it.lowercase() }}"
                 else -> "Estás al día: no tienes entregas pendientes."
             } + when {
-                r.sesionExpirada -> "\nSesión caducada: puede faltar información."
-                r.cursosConError > 0 || r.desdeCache -> "\nSin conexión: puede faltar información."
+                r.sessionExpired -> "\nSesión caducada: puede faltar información."
+                r.coursesWithErrors > 0 || r.fromCache -> "\nSin conexión: puede faltar información."
                 else -> ""
             }
             txtResumenProximo.setOnClickListener {
@@ -549,10 +455,10 @@ class NotificationsFragment : Fragment() {
             })
         }
         when {
-            sinDatos && (r.sesionExpirada || r.desdeCache) -> {
+            sinDatos && (r.sessionExpired || r.fromCache) -> {
                 ponerIconoResumen(R.drawable.ic_cloud_off, R.color.text_secondary)
                 txtResumenTitulo.text = "No se pudo cargar tu agenda"
-                txtResumenDetalle.text = if (r.sesionExpirada)
+                txtResumenDetalle.text = if (r.sessionExpired)
                     "Tu sesión de Eminus caducó. Renuévala desde el aviso superior."
                 else "Sin conexión con Eminus. Desliza hacia abajo para reintentar."
                 cardResumen.strokeColor = ContextCompat.getColor(ctx, R.color.stroke_ok)
@@ -574,7 +480,7 @@ class NotificationsFragment : Fragment() {
                     partes += "$urgentes vence${if (urgentes > 1) "n" else ""} en los próximos 3 días"
                 } else {
                     val prox = porHacer.first()
-                    partes += "Lo próximo: ${prox.activity.nombre} (${Plazos.plazo(prox.activity.terminoMillis).texto.replaceFirstChar { it.lowercase() }})"
+                    partes += "Lo próximo: ${prox.activity.nombre} (${DueDates.dueDate(prox.activity.terminoMillis).text.replaceFirstChar { it.lowercase() }})"
                 }
                 if (enEquipo > 0) partes += "$enEquipo en equipo"
                 txtResumenDetalle.text = partes.joinToString(" · ")
@@ -583,9 +489,9 @@ class NotificationsFragment : Fragment() {
                 )
             }
         }
-        if (sinDatos && (r.sesionExpirada || r.cursosConError > 0 || r.desdeCache)) {
+        if (sinDatos && (r.sessionExpired || r.coursesWithErrors > 0 || r.fromCache)) {
             txtResumenDetalle.append(
-                if (r.sesionExpirada) "\nSesión caducada: puede faltar información."
+                if (r.sessionExpired) "\nSesión caducada: puede faltar información."
                 else "\nSin conexión: puede faltar información."
             )
         }
@@ -610,7 +516,7 @@ class NotificationsFragment : Fragment() {
         // ---- Calificaciones recientes ----
         val recientes = actividades
             .filter { it.activity.calificacion != null }
-            .mapNotNull { a -> Plazos.parseIso(a.activity.fechaRevision)?.let { a to it } }
+            .mapNotNull { a -> DueDates.parseEminusDate(a.activity.fechaRevision)?.let { a to it } }
             .filter { ahora - it.second <= DIAS_CALIFICACION_RECIENTE }
             .sortedByDescending { it.second }
             .take(MAX_FILAS)
@@ -622,7 +528,7 @@ class NotificationsFragment : Fragment() {
             val max = act.calificacionMax
             agregarFila(
                 layoutCalificaciones, R.drawable.ic_star, R.color.badge_success_text, act.nombre,
-                "${Plazos.haceCuanto(revision).replaceFirstChar { it.uppercase() }} · ${item.courseName}",
+                "${DueDates.timeAgo(revision).replaceFirstChar { it.uppercase() }} · ${item.courseName}",
                 "${ActividadCardBinder.formatoNota(cal)}/${ActividadCardBinder.formatoNota(max)}",
                 ContextCompat.getColor(ctx, if (cal >= max * 0.6) R.color.badge_success_text else R.color.badge_error_text)
             ) { ActividadCardBinder.abrirDetalle(ctx, item) }
@@ -638,7 +544,7 @@ class NotificationsFragment : Fragment() {
 
         val ctx = requireContext()
         noLeidos.take(MAX_FILAS).forEach { m ->
-            val cuando = Plazos.haceCuanto(Plazos.parseIso(m.fechaEnviado))
+            val cuando = DueDates.timeAgo(DueDates.parseEminusDate(m.fechaEnviado))
             agregarFila(
                 layoutMensajes, R.drawable.ic_mail, R.color.badge_info_text, m.titulo?.takeIf { it.isNotBlank() } ?: "(Sin asunto)",
                 listOf(m.getNombreRemitente(), cuando).filter { it.isNotBlank() }.joinToString(" · "),
@@ -653,22 +559,22 @@ class NotificationsFragment : Fragment() {
     }
 
     private fun pintarSeccionExamenes(examenes: List<ExamItem>) {
-        val disponibles = examenesDisponibles(examenes)
+        val disponibles = ExamRules.availableByClosing(examenes)
         layoutExamenes.removeAllViews()
         seccionExamenes.visibility = if (disponibles.isEmpty()) View.GONE else View.VISIBLE
 
         val ctx = requireContext()
         disponibles.take(MAX_FILAS).forEach { ex ->
-            val p = Plazos.plazo(Plazos.parseIso(ex.fechaTermino))
+            val p = DueDates.dueDate(DueDates.parseEminusDate(ex.fechaTermino))
             agregarFila(
-                layoutExamenes, R.drawable.ic_quiz, R.color.brand_uv_green, ex.titulo, "${ex.nombreCurso} · ${p.texto}",
+                layoutExamenes, R.drawable.ic_quiz, R.color.brand_uv_green, ex.titulo, "${ex.nombreCurso} · ${p.text}",
                 null, null
             ) { ExamsActivity.start(ctx) }
         }
     }
 
     private fun pintarSeccionForos(foros: List<ForumItem>) {
-        val conNovedades = forosConNovedades(foros)
+        val conNovedades = forumsWithNews(foros)
         layoutForos.removeAllViews()
         seccionForos.visibility = if (conNovedades.isEmpty()) View.GONE else View.VISIBLE
 

@@ -23,7 +23,14 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.coroutines.launch
 import androidx.core.text.HtmlCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -33,8 +40,7 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
+import com.pako.eminus4.appContainer
 import com.pako.eminus4.data.model.ActivityAttachment
 import com.pako.eminus4.data.model.ActivityDetail
 import com.pako.eminus4.data.model.DeliveryAttachment
@@ -59,8 +65,14 @@ class ActivityDetailActivity : AppCompatActivity() {
         const val EXTRA_ACTIVITY_INDEX   = "extra_activity_index"
     }
 
-    private lateinit var sessionManager: SessionManager
-    private lateinit var apiClient: EminusApiClient
+    private val viewModel: ActivityDetailViewModel by viewModels {
+        viewModelFactory {
+            initializer {
+                val container = appContainer
+                ActivityDetailViewModel(container.deliveryRepository) { container.sessionStore.getUserId() }
+            }
+        }
+    }
     private var courseId: Long = 0L
     private var activityId: Long = 0L
     private var courseName: String = ""
@@ -150,11 +162,14 @@ class ActivityDetailActivity : AppCompatActivity() {
             return
         }
 
-        sessionManager = SessionManager(this)
-        apiClient = EminusApiClient(sessionManager)
-
         inicializarVistas()
-        cargarDetalleActividad()
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { viewModel.state.collect(::render) }
+                launch { viewModel.events.collect(::onEvent) }
+            }
+        }
+        if (savedInstanceState == null || viewModel.state.value.activityId != activityId) viewModel.open(courseId, activityId)
     }
 
     private fun inicializarVistas() {
@@ -298,7 +313,7 @@ class ActivityDetailActivity : AppCompatActivity() {
         modoEdicion = false
         currentDelivery = null
         currentDetail = null
-        cargarDetalleActividad()
+        viewModel.open(courseId, activityId)
     }
 
     private fun limpiarArchivoSeleccionado() {
@@ -308,28 +323,27 @@ class ActivityDetailActivity : AppCompatActivity() {
         btnSubmitDelivery.isEnabled = false
     }
 
-    private fun cargarDetalleActividad() {
-        swipeRefresh.isRefreshing = true
+    private fun cargarDetalleActividad() = viewModel.reload()
 
-        // 1. Cargar detalles principales de la actividad (instrucciones y adjuntos del docente)
-        apiClient.getActivityDetail(courseId, activityId) { result ->
-            swipeRefresh.isRefreshing = false
-            progressDesc.visibility = View.GONE
+    /** Pinta lo que cambió del estado (detalle, entrega, progreso del envío). */
+    private fun render(state: ActivityDetailUiState) {
+        if (state.activityId != activityId) return
+        swipeRefresh.isRefreshing = state.loading
+        if (!state.loading) progressDesc.visibility = View.GONE
+        state.detail?.let { if (it !== currentDetail) mostrarDetalle(it) }
+        state.delivery?.let { if (it !== currentDelivery) mostrarEntregaEstudiante(it) }
+        if (state.sending != enviandoEntrega || state.sending) setEnviando(state.sending, state.sendingMessage.orEmpty())
+    }
 
-            result.onSuccess { detail ->
-                mostrarDetalle(detail)
-            }.onFailure { error ->
-                Toast.makeText(this, "Error al cargar actividad: ${error.localizedMessage}", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        // 2. Cargar estado de entrega y archivos enviados por el estudiante
-        val userId = sessionManager.getUserId() ?: ""
-        if (userId.isNotBlank()) {
-            apiClient.getStudentDelivery(courseId, activityId, userId) { deliveryResult ->
-                deliveryResult.onSuccess { delivery ->
-                    mostrarEntregaEstudiante(delivery)
-                }
+    private fun onEvent(event: ActivityDetailEvent) {
+        when (event) {
+            is ActivityDetailEvent.Toast -> Toast.makeText(this, event.message, Toast.LENGTH_LONG).show()
+            is ActivityDetailEvent.Error -> mostrarError(event.message)
+            is ActivityDetailEvent.Submitted -> {
+                limpiarArchivoSeleccionado()
+                modoEdicion = false   // entrega actualizada: volver a solo lectura
+                // Ya entregada: dejar de recordarla al instante
+                com.pako.eminus4.notificaciones.Recordatorios.quitarTarea(this, event.courseId, event.activityId)
             }
         }
     }
@@ -354,7 +368,7 @@ class ActivityDetailActivity : AppCompatActivity() {
             badgeStatus.setTextColor(ContextCompat.getColor(this, R.color.badge_info_text))
             txtScoreValue.text = "Valor: ${"%.0f".format(valor)} pts"
         } else {
-            // Mismo vocabulario que Avisos (EstadoAlumno)
+            // Mismo vocabulario que Avisos (StudentStatus)
             val (texto, color) = when {
                 detail.estaCerrada -> "No entregada" to R.color.badge_error_text
                 detail.estado == 0 -> "Borrador sin enviar" to R.color.badge_warning_text
@@ -544,24 +558,7 @@ class ActivityDetailActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun quitarArchivo(archivo: DeliveryAttachment) {
-        val idCurso = courseId
-        val idActividad = activityId
-        setEnviando(true, "Quitando \"${archivo.nombreOriginal}\"…")
-
-        // Igual que al enviar: confirmar primero que la actividad siga abierta
-        verificarActividadAbierta(idCurso, idActividad) {
-            apiClient.deleteDeliveryFile(idCurso, archivo.idArchivo) { result ->
-                result.onSuccess {
-                    setEnviando(false)
-                    Toast.makeText(this, "Archivo quitado de tu entrega", Toast.LENGTH_SHORT).show()
-                    if (activityId == idActividad) cargarDetalleActividad()
-                }.onFailure { e ->
-                    terminarConError("No se pudo quitar el archivo: ${mensajeError(e)}")
-                }
-            }
-        }
-    }
+    private fun quitarArchivo(archivo: DeliveryAttachment) = viewModel.removeFile(archivo)
 
     private fun mostrarEntregaEstudiante(delivery: StudentDelivery) {
         currentDelivery = delivery
@@ -642,25 +639,8 @@ class ActivityDetailActivity : AppCompatActivity() {
         }
     }
 
-    private fun descargarConDownloadManager(downloadUrl: String, fileName: String) {
-        try {
-            val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
-                setTitle(fileName)
-                setDescription("Descargando archivo institucional de Eminus…")
-                val token = sessionManager.getAccessToken()
-                if (!token.isNullOrBlank()) {
-                    addRequestHeader("Authorization", "Bearer $token")
-                }
-                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-            }
-            downloadManager.enqueue(request)
-            Toast.makeText(this, "Descargando: $fileName", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Error al descargar: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-        }
-    }
+    private fun descargarConDownloadManager(downloadUrl: String, fileName: String) =
+        com.pako.eminus4.util.PublicDownloads.enqueue(this, downloadUrl, fileName, "Descargando archivo institucional de Eminus…")
 
     private fun obtenerNombreArchivo(uri: Uri): String {
         var nombre = "archivo_seleccionado"
@@ -691,120 +671,14 @@ class ActivityDetailActivity : AppCompatActivity() {
     private fun enviarEntrega() {
         val uri = selectedFileUri ?: return
         if (enviandoEntrega) return
-
         val nombreArchivo = obtenerNombreArchivo(uri)
         val mimeType = contentResolver.getType(uri)
             ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(nombreArchivo.substringAfterLast('.', "").lowercase())
             ?: "application/octet-stream"
         val comentario = editDeliveryComment.text?.toString()?.trim().orEmpty()
-        val idCurso = courseId
-        val idActividad = activityId
-
-        setEnviando(true, "Preparando archivo…")
-
-        // Copiar el contenido del Uri a un archivo temporal (OkHttp necesita un File)
-        Thread {
-            val tempFile = try {
-                copiarUriACache(uri, nombreArchivo)
-            } catch (e: Exception) {
-                null
-            }
-            runOnUiThread {
-                if (tempFile == null) {
-                    terminarConError("No se pudo leer el archivo seleccionado.")
-                } else {
-                    verificarActividadAbierta(idCurso, idActividad) {
-                        obtenerIdEntrega(idCurso, idActividad) { idEntrega ->
-                            subirYConfirmar(idCurso, idActividad, idEntrega, tempFile, nombreArchivo, mimeType, comentario)
-                        }
-                    }
-                }
-            }
-        }.start()
-    }
-
-    /** Igual que Eminus web: antes de enviar, se vuelve a consultar el estado real de la actividad. */
-    private fun verificarActividadAbierta(idCurso: Long, idActividad: Long, onOk: () -> Unit) {
-        setEnviando(true, "Verificando que la actividad siga abierta…")
-        apiClient.getActivityDetail(idCurso, idActividad) { result ->
-            result.onSuccess { detail ->
-                when {
-                    detail.esPorEquipos -> terminarConError("Las actividades por equipo deben entregarse desde Eminus web.")
-                    detail.estaCerrada -> {
-                        terminarConError(if (detail.estaCalificada || detail.estado == 3)
-                            "La actividad ya fue calificada; Eminus no admite cambios."
-                        else
-                            "La actividad ya cerró; Eminus no admite nuevas entregas.")
-                        mostrarDetalle(detail)
-                    }
-                    else -> onOk()
-                }
-            }.onFailure { e -> terminarConError(mensajeError(e)) }
-        }
-    }
-
-    /** Usa la entrega existente o crea el borrador (paso 1 del flujo de Eminus). */
-    private fun obtenerIdEntrega(idCurso: Long, idActividad: Long, onId: (Long) -> Unit) {
-        val existente = currentDelivery?.idActividadEntrega ?: 0L
-        if (existente > 0) {
-            onId(existente)
-            return
-        }
-        setEnviando(true, "Creando entrega en Eminus…")
-        apiClient.createDeliveryDraft(idCurso, idActividad) { result ->
-            result.onSuccess { onId(it) }
-                .onFailure { e -> terminarConError(mensajeError(e)) }
-        }
-    }
-
-    private fun subirYConfirmar(
-        idCurso: Long,
-        idActividad: Long,
-        idEntrega: Long,
-        archivo: File,
-        nombreArchivo: String,
-        mimeType: String,
-        comentario: String
-    ) {
-        setEnviando(true, "Subiendo \"$nombreArchivo\"…")
-        apiClient.uploadDeliveryFile(idCurso, idActividad, idEntrega, archivo, nombreArchivo, mimeType) { upload ->
-            upload.onSuccess {
-                setEnviando(true, "Confirmando entrega…")
-                val textoHtml = construirTextoEntrega(comentario, nombreArchivo)
-                apiClient.submitDelivery(idCurso, idActividad, idEntrega, textoHtml) { submit ->
-                    archivo.delete()
-                    submit.onSuccess {
-                        setEnviando(false)
-                        limpiarArchivoSeleccionado()
-                        modoEdicion = false   // entrega actualizada: volver a solo lectura
-                        Toast.makeText(this, "Entrega enviada a Eminus", Toast.LENGTH_LONG).show()
-                        // Ya entregada: dejar de recordarla al instante
-                        com.pako.eminus4.notificaciones.Recordatorios.quitarTarea(this, idCurso, idActividad)
-                        // Si el usuario navegó a otra actividad mientras tanto, no recargamos encima
-                        if (activityId == idActividad) cargarDetalleActividad()
-                    }.onFailure { e ->
-                        terminarConError("El archivo se subió, pero no se pudo confirmar la entrega: ${mensajeError(e)}")
-                    }
-                }
-            }.onFailure { e ->
-                archivo.delete()
-                terminarConError(mensajeError(e))
-            }
-        }
-    }
-
-    /** Eminus exige texto en la entrega; se manda como HTML (el editor web es Froala). */
-    private fun construirTextoEntrega(comentario: String, nombreArchivo: String): String {
-        val previo = currentDelivery?.descEntrega
-        // Si el alumno no tocó el comentario precargado, se reenvía el HTML original intacto
-        // (conserva enlaces, formato e imágenes que la versión en texto plano perdería).
-        if (!previo.isNullOrBlank() && (comentario.isBlank() || comentario == comentarioPrecargado)) {
-            return previo
-        }
-        if (comentario.isNotBlank()) {
-            return comentario.lines().joinToString("") { "<p>${android.text.TextUtils.htmlEncode(it)}</p>" }
-        }
-        return "<p>Entrega: ${android.text.TextUtils.htmlEncode(nombreArchivo)}</p>"
+        // Se copia a un archivo temporal (OkHttp necesita un File); el ViewModel lo hace fuera del hilo principal
+        val archivo = PickedFile(nombreArchivo, mimeType) { copiarUriACache(uri, nombreArchivo) }
+        viewModel.submit(archivo, comentario, comentarioPrecargado)
     }
 
     private fun copiarUriACache(uri: Uri, nombre: String): File {
@@ -829,23 +703,13 @@ class ActivityDetailActivity : AppCompatActivity() {
         swipeRefresh.isEnabled = !enviando
     }
 
-    private fun terminarConError(mensaje: String) {
-        setEnviando(false)
+    private fun mostrarError(mensaje: String) {
         if (isFinishing || isDestroyed) return
         AlertDialog.Builder(this)
             .setTitle("No se pudo completar")
             .setMessage(mensaje)
             .setPositiveButton("Entendido", null)
             .show()
-    }
-
-    private fun mensajeError(e: Throwable): String {
-        val msg = e.localizedMessage ?: "Error desconocido"
-        return when {
-            msg.contains("401") -> "Tu sesión de Eminus caducó. Renueva la sesión desde la pantalla principal y vuelve a intentarlo."
-            e is java.io.IOException -> "Sin conexión con Eminus. Revisa tu internet e inténtalo de nuevo."
-            else -> msg
-        }
     }
 
     private fun formatearFechaIso(iso: String?): String {

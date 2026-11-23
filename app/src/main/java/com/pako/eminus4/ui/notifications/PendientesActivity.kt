@@ -16,16 +16,19 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.appbar.MaterialToolbar
+import androidx.lifecycle.lifecycleScope
 import com.pako.eminus4.R
+import com.pako.eminus4.appContainer
+import kotlinx.coroutines.launch
 import com.pako.eminus4.data.model.Course
 import com.pako.eminus4.data.model.CourseActivityItem
-import com.pako.eminus4.data.model.EstadoAlumno
+import com.pako.eminus4.domain.StudentStatus
 import com.pako.eminus4.ui.courses.ActividadCardBinder
 import com.pako.eminus4.ui.exams.ExamsActivity
 import com.pako.eminus4.ui.forums.ForumDetailActivity
 import com.pako.eminus4.ui.messages.MessageDetailActivity
-import com.pako.eminus4.util.NombreMateria
-import com.pako.eminus4.util.Plazos
+import com.pako.eminus4.domain.SubjectName
+import com.pako.eminus4.domain.DueDates
 import java.util.concurrent.TimeUnit
 
 /**
@@ -71,15 +74,22 @@ class PendientesActivity : AppCompatActivity() {
             val b = ins.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(0, b.top, 0, b.bottom); ins
         }
-        val curso = AvisosDatos.cursos.firstOrNull { it.idCurso == idCurso }
+        val curso = snapshot().agenda?.courses?.firstOrNull { it.idCurso == idCurso }
         toolbar.title = when {
-            curso != null -> NombreMateria.bonito(curso.getNombreLimpio())
+            curso != null -> SubjectName.displayName(curso.getNombreLimpio())
             enfoque == Enfoque.URGENTE -> "Vencen pronto"
             enfoque == Enfoque.REVISION -> "En revisión"
             else -> "Pendientes"
         }
         toolbar.subtitle = if (curso != null) "Pendientes de la materia" else "Por materia"
     }
+
+    /** Lo último que cargó Avisos (sin volver a pedir a Eminus). */
+    private fun snapshot() = appContainer.agendaRepository.snapshot
+
+    /** Mensaje de esa materia (Eminus solo trae el nombre del curso en el mensaje). */
+    private fun esDeMateria(m: com.pako.eminus4.data.model.MessageItem, c: Course) =
+        m.curso != null && m.getCursoLimpio().equals(c.getNombreLimpio(), ignoreCase = true)
 
     override fun onResume() {
         super.onResume()
@@ -88,11 +98,12 @@ class PendientesActivity : AppCompatActivity() {
 
     private fun pintar() {
         contenedor.removeAllViews()
-        if (!AvisosDatos.hayDatos) {
+        val data = snapshot()
+        if (!data.hasData) {
             vacio("Abre Avisos para cargar tus pendientes.")
             return
         }
-        val cursos = AvisosDatos.cursos.filter { idCurso == null || it.idCurso == idCurso }
+        val cursos = data.agenda?.courses.orEmpty().filter { idCurso == null || it.idCurso == idCurso }
         var algo = false
         cursos.sortedBy { it.getNombreLimpio() }.forEach { c -> if (pintarMateria(c, mostrarNombre = idCurso == null)) algo = true }
         if (!algo) vacio(when (enfoque) {
@@ -105,15 +116,16 @@ class PendientesActivity : AppCompatActivity() {
     /** Devuelve false si la materia no tiene nada que mostrar con el enfoque actual. */
     private fun pintarMateria(c: Course, mostrarNombre: Boolean): Boolean {
         val ahora = System.currentTimeMillis()
-        val acts = AvisosDatos.actividades.filter { it.courseId == c.idCurso }
-        val porHacer = acts.filter { it.activity.estadoAlumno.esPendiente }
+        val data = snapshot()
+        val acts = data.agenda?.activities.orEmpty().filter { it.courseId == c.idCurso }
+        val porHacer = acts.filter { it.activity.studentStatus.isPending }
             .filter { enfoque != Enfoque.URGENTE || esUrgente(it, ahora) }
             .sortedBy { it.activity.terminoMillis ?: Long.MAX_VALUE }
-        val revision = acts.filter { it.activity.estadoAlumno == EstadoAlumno.ESPERANDO }
+        val revision = acts.filter { it.activity.studentStatus == StudentStatus.AWAITING_GRADE }
         val todo = enfoque == Enfoque.TODO
-        val examenes = if (todo) AvisosDatos.examenesDisponibles.filter { it.idCurso == c.idCurso } else emptyList()
-        val foros = if (todo) AvisosDatos.forosNuevos.filter { it.idCurso == c.idCurso } else emptyList()
-        val mensajes = if (todo) AvisosDatos.mensajesNoLeidos.filter { AvisosDatos.esDeMateria(it, c) } else emptyList()
+        val examenes = if (todo) data.availableExams.filter { it.idCurso == c.idCurso } else emptyList()
+        val foros = if (todo) data.forumsWithNews.filter { it.idCurso == c.idCurso } else emptyList()
+        val mensajes = if (todo) data.unreadMessages.filter { esDeMateria(it, c) } else emptyList()
         val enRevision = if (enfoque != Enfoque.URGENTE) revision else emptyList()
         val listaPorHacer = if (enfoque != Enfoque.REVISION) porHacer else emptyList()
 
@@ -133,7 +145,7 @@ class PendientesActivity : AppCompatActivity() {
             seccion("EXÁMENES DISPONIBLES", examenes.size)
             examenes.forEach { ex ->
                 fila(R.drawable.ic_quiz, R.color.brand_uv_green, ex.titulo,
-                    Plazos.plazo(Plazos.parseIso(ex.fechaTermino)).texto, null) { ExamsActivity.start(this) }
+                    DueDates.dueDate(DueDates.parseEminusDate(ex.fechaTermino)).text, null) { ExamsActivity.start(this) }
             }
         }
         if (foros.isNotEmpty()) {
@@ -170,7 +182,7 @@ class PendientesActivity : AppCompatActivity() {
     private fun encabezadoMateria(c: Course, total: Int) {
         val v = LayoutInflater.from(this).inflate(R.layout.item_section_header, contenedor, false)
         v.findViewById<TextView>(R.id.txtHeaderTitle).apply {
-            text = NombreMateria.bonito(c.getNombreLimpio())
+            text = SubjectName.displayName(c.getNombreLimpio())
             textSize = 15f
             setTextColor(ContextCompat.getColor(this@PendientesActivity, R.color.text_primary))
         }

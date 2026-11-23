@@ -1,6 +1,7 @@
 package com.pako.eminus4.notificaciones
 
 import android.content.Context
+import com.pako.eminus4.domain.ReminderSettings
 
 /**
  * Configuración de recordatorios que elige el usuario (Perfil → Notificaciones).
@@ -62,4 +63,10 @@ class NotifPrefs(context: Context) {
     var yaSePregunto: Boolean
         get() = prefs.getBoolean("ya_pregunto", false)
         set(v) = prefs.edit().putBoolean("ya_pregunto", v).apply()
+
+    /** Los ajustes como datos simples para [com.pako.eminus4.domain.ReminderPlanner]. */
+    fun toSettings() = ReminderSettings(
+        enabled = activadas, tasks = tareas, exams = examenes, examOnOpen = examenAlAbrir,
+        forums = foros, overdue = avisarVencida, minutesBefore = minutosAntes
+    )
 }

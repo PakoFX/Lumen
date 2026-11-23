@@ -143,9 +143,9 @@ class NotificacionesActivity : AppCompatActivity() {
             !prefs.activadas -> "Desactivados: no recibirás recordatorios."
             alarmas.isEmpty() -> "Sin recordatorios por ahora. Se programan solos al cargar tus actividades."
             else -> {
-                val prox = alarmas.minByOrNull { it.cuando }!!
-                val nombre = Recordatorios.buscarFuente(this, prox.clave)?.nombre.orEmpty()
-                val cuando = SimpleDateFormat("EEE d MMM, HH:mm", Locale("es", "MX")).format(Date(prox.cuando))
+                val prox = alarmas.minByOrNull { it.at }!!
+                val nombre = Recordatorios.buscarFuente(this, prox.key)?.name.orEmpty()
+                val cuando = SimpleDateFormat("EEE d MMM, HH:mm", Locale("es", "MX")).format(Date(prox.at))
                 "${alarmas.size} recordatorio${if (alarmas.size == 1) "" else "s"} programado${if (alarmas.size == 1) "" else "s"}" +
                     " · el próximo: $cuando" + if (nombre.isNotBlank()) " ($nombre)" else ""
             }

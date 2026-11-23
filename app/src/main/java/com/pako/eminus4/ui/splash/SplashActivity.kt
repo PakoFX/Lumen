@@ -7,7 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.appcompat.app.AppCompatActivity
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
+import com.pako.eminus4.data.local.SessionStore
 import com.pako.eminus4.ui.auth.LoginWebViewActivity
 import com.pako.eminus4.ui.main.MainActivity
 
@@ -38,8 +38,8 @@ class SplashActivity : AppCompatActivity() {
     }
 
     private fun redirigir() {
-        val sessionManager = SessionManager(this)
-        val destino = if (sessionManager.hasSession()) {
+        val sessionStore = SessionStore(this)
+        val destino = if (sessionStore.hasSession()) {
             Intent(this, MainActivity::class.java)
         } else {
             Intent(this, LoginWebViewActivity::class.java)

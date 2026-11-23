@@ -3,7 +3,8 @@ package com.pako.eminus4.data.model
 import androidx.annotation.DrawableRes
 import com.google.gson.annotations.SerializedName
 import com.pako.eminus4.R
-import com.pako.eminus4.util.Plazos
+import com.pako.eminus4.domain.DueDates
+import com.pako.eminus4.domain.StudentStatus
 
 /**
  * Representa una actividad/tarea dentro de un curso de Eminus.
@@ -42,30 +43,30 @@ data class Activity(
         get() = porEquipos == 1
 
     val terminoMillis: Long?
-        get() = Plazos.parseIso(fechaTermino)
+        get() = DueDates.parseEminusDate(fechaTermino)
 
     /** Abierta según Eminus (estadoAct); si no viene, se decide por la fecha límite. */
     val estaAbierta: Boolean
         get() = estadoAct?.let { it == 2 || it == 4 }
             ?: (terminoMillis?.let { it > System.currentTimeMillis() } ?: true)
 
-    /** Situación real para el alumno. Ver [EstadoAlumno]. */
-    val estadoAlumno: EstadoAlumno
+    /** Situación real para el alumno. Ver [StudentStatus]. */
+    val studentStatus: StudentStatus
         get() = when {
-            calificacion != null || estado == 3 || estado == 4 -> EstadoAlumno.CALIFICADA
-            estado == 1 || estado == 2                         -> EstadoAlumno.ESPERANDO
-            estaAbierta -> if (estado == 0) EstadoAlumno.BORRADOR else EstadoAlumno.POR_HACER
-            else                                               -> EstadoAlumno.NO_ENTREGADA
+            calificacion != null || estado == 3 || estado == 4 -> StudentStatus.GRADED
+            estado == 1 || estado == 2                         -> StudentStatus.AWAITING_GRADE
+            estaAbierta -> if (estado == 0) StudentStatus.DRAFT else StudentStatus.TO_DO
+            else                                               -> StudentStatus.NOT_SUBMITTED
         }
 
     val entregada: Boolean
-        get() = estadoAlumno == EstadoAlumno.ESPERANDO || estadoAlumno == EstadoAlumno.CALIFICADA
+        get() = studentStatus == StudentStatus.AWAITING_GRADE || studentStatus == StudentStatus.GRADED
 
     val estaEntregada: Boolean
         get() = entregada
 
     val estaCalificada: Boolean
-        get() = estadoAlumno == EstadoAlumno.CALIFICADA
+        get() = studentStatus == StudentStatus.GRADED
 
     val fechaLimite: String?
         get() = fechaTermino ?: fechaEntrega

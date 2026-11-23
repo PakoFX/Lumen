@@ -50,6 +50,12 @@ dependencies {
     implementation(libs.androidx.swiperefreshlayout)
     implementation(libs.material)
 
+    // Arquitectura: ViewModel + corrutinas (MVVM)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.fragment.ktx)
+    implementation(libs.kotlinx.coroutines.android)
+
     // Red y Serialización JSON
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
@@ -71,6 +77,10 @@ dependencies {
     }
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
+    // org.json real para pruebas locales (en el JVM la de Android es solo un esqueleto)
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
 }

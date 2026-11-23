@@ -16,7 +16,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import coil.load
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
+import com.pako.eminus4.data.local.SessionStore
 import com.pako.eminus4.data.model.StudentCredential
 import com.pako.eminus4.util.BarcodeGenerator
 import java.text.SimpleDateFormat
@@ -32,7 +32,7 @@ class CredentialFullscreenActivity : AppCompatActivity() {
         }
     }
 
-    private lateinit var sessionManager: SessionManager
+    private lateinit var sessionStore: SessionStore
     private val clockHandler = Handler(Looper.getMainLooper())
     private lateinit var txtLiveClock: TextView
     private val clockFormat = SimpleDateFormat("dd/MMM/yyyy HH:mm:ss", Locale("es", "MX"))
@@ -57,7 +57,7 @@ class CredentialFullscreenActivity : AppCompatActivity() {
         // Brillo máximo en pantalla para lectura institucional y escáneres
         ajustarBrilloMaximo()
 
-        sessionManager = SessionManager(this)
+        sessionStore = SessionStore(this)
 
         txtLiveClock = findViewById(R.id.txtLiveClock)
 
@@ -107,9 +107,9 @@ class CredentialFullscreenActivity : AppCompatActivity() {
 
     private fun cargarDatosCredencial() {
         // Solo la credencial de quien tiene la sesión; si no hay, se arma con SUS datos
-        val cred: StudentCredential = sessionManager.getCredencialDelUsuarioActual() ?: run {
-            val profile = sessionManager.getUserProfile()
-            val matricula = sessionManager.getMatriculaSesion() ?: profile.userId.uppercase()
+        val cred: StudentCredential = sessionStore.getCurrentUserCredential() ?: run {
+            val profile = sessionStore.getUserProfile()
+            val matricula = sessionStore.getSessionStudentId() ?: profile.userId.uppercase()
             StudentCredential(
                 user = matricula,
                 name = profile.getNombreCompleto(),
@@ -125,7 +125,7 @@ class CredentialFullscreenActivity : AppCompatActivity() {
 
         // Si la credencial aún no trae nombre, usar el de la sesión (nunca dejarlo vacío)
         val credConNombre = if (cred.name.isBlank())
-            cred.copy(name = sessionManager.getUserProfile().getNombreCompleto()) else cred
+            cred.copy(name = sessionStore.getUserProfile().getNombreCompleto()) else cred
         findViewById<TextView>(R.id.txtFullStudentName).text = credConNombre.getNombreFormateado()
         findViewById<TextView>(R.id.txtFullStudentId).text = cred.getMatriculaOficial()
         findViewById<TextView>(R.id.txtProgram).text = cred.getProgramaOficial().ifBlank { "Programa no registrado" }

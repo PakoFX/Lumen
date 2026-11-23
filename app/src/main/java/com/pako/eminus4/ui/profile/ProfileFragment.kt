@@ -12,14 +12,21 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.load
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.switchmaterial.SwitchMaterial
 import com.pako.eminus4.AppUpdater
+import androidx.lifecycle.lifecycleScope
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.api.EminusApiClient
-import com.pako.eminus4.data.model.UserProfile
+import com.pako.eminus4.appContainer
+import kotlinx.coroutines.launch
+import com.pako.eminus4.data.local.SessionStore
+import com.pako.eminus4.domain.ProfileCard
 import com.pako.eminus4.ui.main.MainActivity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -27,8 +34,16 @@ import java.util.Locale
 
 class ProfileFragment : Fragment() {
 
-    private lateinit var sessionManager: SessionManager
-    private lateinit var apiClient: EminusApiClient
+    private val sessionStore: SessionStore get() = requireContext().appContainer.sessionStore
+    private val viewModel: ProfileViewModel by viewModels {
+        viewModelFactory {
+            initializer {
+                val container = requireContext().appContainer
+                ProfileViewModel(container.profileRepository, container.credentialRepository)
+            }
+        }
+    }
+    private var textoBotonFoto: CharSequence? = null
 
     private lateinit var imgAvatar: ImageView
     private lateinit var txtStudentName: TextView
@@ -71,14 +86,14 @@ class ProfileFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        sessionManager = SessionManager(requireContext())
-        apiClient = EminusApiClient(sessionManager)
-
         inicializarVistas(view)
-        cargarPerfilDesdeCache()
-        ultimaRecargaApi = android.os.SystemClock.elapsedRealtime()
-        actualizarPerfilDesdeApi()
         iniciarRelojPerfil()
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { viewModel.state.collect(::render) }
+                launch { viewModel.events.collect(::onEvent) }
+            }
+        }
     }
 
     private fun inicializarVistas(view: View) {
@@ -93,7 +108,7 @@ class ProfileFragment : Fragment() {
         clockProfileLive = view.findViewById(R.id.clockProfileLive)
         cardStudentCredential = view.findViewById(R.id.cardStudentCredential)
         btnOpenCredential = view.findViewById(R.id.btnOpenCredential)
-        view.findViewById<MaterialButton>(R.id.btnRecargarFoto).setOnClickListener { b -> recargarFoto(b as MaterialButton) }
+        view.findViewById<MaterialButton>(R.id.btnRecargarFoto).setOnClickListener { viewModel.reloadPhoto() }
         txtEmailUv = view.findViewById(R.id.txtEmailUv)
 
         // La credencial se abre SOLO con su botón (tocar la tarjeta hacía lo mismo: redundante)
@@ -119,13 +134,13 @@ class ProfileFragment : Fragment() {
         switchDarkMode = view.findViewById(R.id.switchDarkMode)
         txtDarkModeStatus = view.findViewById(R.id.txtDarkModeStatus)
 
-        val isDark = sessionManager.isDarkModeEnabled()
+        val isDark = sessionStore.isDarkModeEnabled()
         switchDarkMode.isChecked = isDark
         txtDarkModeStatus.text = if (isDark) "Activado" else "Desactivado"
 
         switchDarkMode.setOnCheckedChangeListener { _, isChecked ->
-            if (sessionManager.isDarkModeEnabled() != isChecked) {
-                sessionManager.setDarkModeEnabled(isChecked)
+            if (sessionStore.isDarkModeEnabled() != isChecked) {
+                sessionStore.setDarkModeEnabled(isChecked)
                 txtDarkModeStatus.text = if (isChecked) "Activado" else "Desactivado"
                 AppCompatDelegate.setDefaultNightMode(
                     if (isChecked) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
@@ -177,124 +192,38 @@ class ProfileFragment : Fragment() {
      */
     override fun onResume() {
         super.onResume()
-        if (!isHidden) recargarPerfil()
+        if (!isHidden) viewModel.refresh()
     }
 
     override fun onHiddenChanged(hidden: Boolean) {
         super.onHiddenChanged(hidden)
-        if (!hidden) recargarPerfil()
+        if (!hidden) viewModel.refresh()
     }
 
-    private var ultimaRecargaApi = 0L
-
-    private fun recargarPerfil() {
-        if (view == null) return
-        cargarPerfilDesdeCache()
-        // La API como mucho cada 30 s; la caché (credencial) siempre se repinta
-        val ahora = android.os.SystemClock.elapsedRealtime()
-        if (ahora - ultimaRecargaApi > 30_000) {
-            ultimaRecargaApi = ahora
-            actualizarPerfilDesdeApi()
+    private fun render(state: ProfileUiState) {
+        val boton = view?.findViewById<MaterialButton>(R.id.btnRecargarFoto)
+        if (boton != null) {
+            if (textoBotonFoto == null) textoBotonFoto = boton.text
+            boton.isEnabled = !state.reloadingPhoto
+            boton.text = if (state.reloadingPhoto) "Cargando tu foto de MiUV…" else textoBotonFoto
         }
+        state.card?.let(::mostrarPerfil)
     }
 
-    private fun cargarPerfilDesdeCache() {
-        val cached = sessionManager.getUserProfile()
-        mostrarPerfil(cached)
-    }
-
-    private fun actualizarPerfilDesdeApi() {
-        apiClient.getUserProfile { result ->
-            if (!isAdded) return@getUserProfile
-
-            result.onSuccess { apiProfile ->
-                mostrarPerfil(apiProfile)
-                // Guardar datos enriquecidos en sessionManager
-                sessionManager.saveSession(
-                    accessToken = sessionManager.getAccessToken() ?: "",
-                    userName = apiProfile.getNombreCompleto(),
-                    firstName = apiProfile.nombre,
-                    userId = apiProfile.userId,
-                    userEmail = apiProfile.userEmail,
-                    userCampus = apiProfile.userCampus,
-                    avatarUrl = apiProfile.getFullAvatarUrl(),
-                    tokenExpiration = sessionManager.getUserProfile().tokenExpiration
-                )
-            }.onFailure { _ ->
-                // Fallback a los datos de caché ya mostrados; permitir reintento al volver
-                ultimaRecargaApi = 0L
-            }
-        }
-    }
-
-    private fun mostrarPerfil(profile: UserProfile) {
-        // Matrícula siempre desde la sesión actual (no de la credencial cacheada)
-        val matriculaSession = if (profile.userId.startsWith("z", ignoreCase = true))
-            profile.userId.substring(1).uppercase() else profile.userId.uppercase()
-
-        val credGuardada = sessionManager.getStudentCredential()
-        val credEsDelUsuarioActual = credGuardada?.getMatriculaOficial() == matriculaSession
-
-        // Si la credencial guardada es de otro usuario, ignorarla completamente
-        val cred = if (credEsDelUsuarioActual) credGuardada else null
-
-        val nombre = cred?.getNombreFormateado()?.takeIf { it.isNotBlank() } ?: profile.getNombreCompleto()
-        val matricula = matriculaSession
-        // Campus del perfil de sesión actual (no de credencial de otro usuario)
-        val campusSession = profile.userCampus.ifBlank { cred?.getCampusOficial() ?: "" }
-        val programa = cred?.getProgramaOficial() ?: ""   // sin fallback hardcodeado
-        val campus = campusSession.ifBlank { cred?.getCampusOficial() ?: "" }
-        val vigencia = cred?.getVigenciaTexto() ?: "AGO-ENE 2027"
-
-        txtStudentName.text = nombre
-        txtStudentId.text = matricula
-        txtStudentProgram.text = programa.ifBlank { "Sin programa asignado" }
-        txtStudentCampus.text = campus.ifBlank { "Sin campus asignado" }
-        txtStudentValidity.text = vigencia
-
-        // Siempre persistir credencial actualizada para el usuario actual
-        val vigenciaCorrecta = "AGO-ENE"
-        val anioCorrect = "2027"
-        val necesitaActualizar = cred == null ||
-            cred.name.isBlank() ||
-            cred.monthsValidity != vigenciaCorrecta ||
-            cred.yearValidity != anioCorrect ||
-            !credEsDelUsuarioActual
-        if (necesitaActualizar && matricula.isNotBlank()) {
-            // Conservar lo que ya tenga la credencial (p. ej. datos de MiUV); solo completar lo faltante
-            val actualizada = cred?.copy(
-                name = nombre,
-                region = campus,
-                monthsValidity = vigenciaCorrecta,
-                yearValidity = anioCorrect
-            ) ?: com.pako.eminus4.data.model.StudentCredential(
-                user = matricula,
-                name = nombre,
-                program = programa,
-                region = campus,
-                monthsValidity = vigenciaCorrecta,
-                yearValidity = anioCorrect,
-                photo = null,   // nunca el avatar casual de Eminus
-                qrCode = "https://dsia.uv.mx/credencial/validar?u=$matricula",
-                barCode = matricula
-            )
-            sessionManager.saveStudentCredential(actualizada)
-        }
-
-        txtEmailUv.text = if (profile.userEmail.isNotBlank()) profile.userEmail else "No disponible"
-
-        if (!profile.alternateEmail.isNullOrBlank()) {
-            layoutAlternateEmail.visibility = View.VISIBLE
-            txtEmailAlternate.text = profile.alternateEmail
-        } else {
-            layoutAlternateEmail.visibility = View.GONE
-        }
+    private fun mostrarPerfil(card: ProfileCard) {
+        txtStudentName.text = card.name
+        txtStudentId.text = card.studentId
+        txtStudentProgram.text = card.program.ifBlank { "Sin programa asignado" }
+        txtStudentCampus.text = card.campus.ifBlank { "Sin campus asignado" }
+        txtStudentValidity.text = card.validity
+        txtEmailUv.text = card.email.ifBlank { "No disponible" }
+        layoutAlternateEmail.visibility = if (card.alternateEmail != null) View.VISIBLE else View.GONE
+        txtEmailAlternate.text = card.alternateEmail.orEmpty()
 
         // Tarjeta del Perfil: el avatar que la persona eligió en Eminus.
         // La foto oficial de MiUV es SOLO para la credencial (CredentialFullscreenActivity).
-        val avatarUrl = profile.getFullAvatarUrl()
-        if (!avatarUrl.isNullOrBlank()) {
-            imgAvatar.load(avatarUrl) {
+        if (card.avatarUrl != null) {
+            imgAvatar.load(card.avatarUrl) {
                 crossfade(true)
                 transformations(coil.transform.CircleCropTransformation())
                 placeholder(R.drawable.avatar_vacio)
@@ -303,7 +232,6 @@ class ProfileFragment : Fragment() {
         } else {
             imgAvatar.setImageResource(R.drawable.avatar_vacio)
         }
-
         pintarEstadoSesion()
     }
 
@@ -324,34 +252,23 @@ class ProfileFragment : Fragment() {
         override fun onLost(network: android.net.Network) { view?.post { pintarEstadoSesion() } }
     }
 
-    /** Vuelve a traer la foto oficial de MiUV; si la sesión de MiUV caducó, ofrece entrar otra vez. */
-    private fun recargarFoto(boton: MaterialButton) {
-        boton.isEnabled = false
-        val textoOriginal = boton.text
-        boton.text = "Cargando tu foto de MiUV…"
-        com.pako.eminus4.data.MiuvFoto.recargar(requireContext()) { r ->
-            if (!isAdded) return@recargar
-            boton.isEnabled = true
-            boton.text = textoOriginal
-            when (r) {
-                com.pako.eminus4.data.MiuvFoto.Resultado.OK -> {
-                    Toast.makeText(requireContext(), "Foto actualizada", Toast.LENGTH_SHORT).show()
-                    recargarPerfil()
+    /** Resultado de volver a traer la foto oficial de MiUV; si la sesión de MiUV caducó, ofrece entrar otra vez. */
+    private fun onEvent(event: ProfileEvent) {
+        when (event) {
+            ProfileEvent.PhotoUpdated -> Toast.makeText(requireContext(), "Foto actualizada", Toast.LENGTH_SHORT).show()
+            ProfileEvent.NoPhoto ->
+                Toast.makeText(requireContext(), "MiUV no tiene una foto registrada para tu credencial", Toast.LENGTH_LONG).show()
+            ProfileEvent.NeedsLogin -> AlertDialog.Builder(requireContext())
+                .setTitle("Entrar otra vez a MiUV")
+                .setMessage("Para traer tu foto hay que iniciar sesión de nuevo en MiUV (con tu mismo usuario y contraseña). Solo tarda unos segundos.")
+                .setPositiveButton("Iniciar sesión") { _, _ ->
+                    startActivity(android.content.Intent(requireContext(), com.pako.eminus4.ui.auth.LoginWebViewActivity::class.java).apply {
+                        putExtra("RENEWAL_ONLY", true)
+                        putExtra("FORZAR_MIUV", true)
+                    })
                 }
-                com.pako.eminus4.data.MiuvFoto.Resultado.SIN_FOTO ->
-                    Toast.makeText(requireContext(), "MiUV no tiene una foto registrada para tu credencial", Toast.LENGTH_LONG).show()
-                else -> AlertDialog.Builder(requireContext())
-                    .setTitle("Entrar otra vez a MiUV")
-                    .setMessage("Para traer tu foto hay que iniciar sesión de nuevo en MiUV (con tu mismo usuario y contraseña). Solo tarda unos segundos.")
-                    .setPositiveButton("Iniciar sesión") { _, _ ->
-                        startActivity(android.content.Intent(requireContext(), com.pako.eminus4.ui.auth.LoginWebViewActivity::class.java).apply {
-                            putExtra("RENEWAL_ONLY", true)
-                            putExtra("FORZAR_MIUV", true)
-                        })
-                    }
-                    .setNegativeButton("Ahora no", null)
-                    .show()
-            }
+                .setNegativeButton("Ahora no", null)
+                .show()
         }
     }
 
@@ -367,7 +284,7 @@ class ProfileFragment : Fragment() {
     }
 
     private fun mostrarDialogoEditarCredencial() {
-        val cred = sessionManager.getStudentCredential() ?: return
+        val cred = sessionStore.getStudentCredential() ?: return
         val context = requireContext()
 
         val scrollView = android.widget.ScrollView(context)
@@ -428,8 +345,8 @@ class ProfileFragment : Fragment() {
                     qrCode = cred.qrCode,
                     barCode = nuevaMatricula
                 )
-                sessionManager.saveStudentCredential(updated)
-                mostrarPerfil(sessionManager.getUserProfile())
+                sessionStore.saveStudentCredential(updated)
+                viewModel.redraw()
                 Toast.makeText(context, "Credencial guardada y actualizada", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Cancelar", null)

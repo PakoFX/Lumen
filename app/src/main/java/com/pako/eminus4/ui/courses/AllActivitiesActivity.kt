@@ -23,17 +23,19 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
+import androidx.lifecycle.lifecycleScope
 import com.pako.eminus4.R
-import com.pako.eminus4.core.SessionManager
-import com.pako.eminus4.data.AgendaLoader
-import com.pako.eminus4.data.api.EminusApiClient
+import kotlinx.coroutines.launch
+import com.pako.eminus4.appContainer
+import com.pako.eminus4.data.local.SessionStore
 import com.pako.eminus4.data.model.CourseActivityItem
-import com.pako.eminus4.data.model.EstadoAlumno
-import com.pako.eminus4.util.Plazos
+import com.pako.eminus4.domain.StudentStatus
+import com.pako.eminus4.ui.common.icon
+import com.pako.eminus4.domain.DueDates
 
 /**
  * "Mis actividades": todas las actividades de los cursos activos separadas por la situación
- * real del alumno (ver [EstadoAlumno]).
+ * real del alumno (ver [StudentStatus]).
  */
 class AllActivitiesActivity : AppCompatActivity() {
 
@@ -49,9 +51,7 @@ class AllActivitiesActivity : AppCompatActivity() {
         }
     }
 
-    private lateinit var sessionManager: SessionManager
-    private lateinit var apiClient: EminusApiClient
-    private lateinit var loader: AgendaLoader
+    private lateinit var sessionStore: SessionStore
 
     private lateinit var toolbar: MaterialToolbar
     private lateinit var chipGroupFilter: ChipGroup
@@ -71,17 +71,15 @@ class AllActivitiesActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_all_activities)
 
-        sessionManager = SessionManager(this)
-        apiClient = EminusApiClient(sessionManager)
-        loader = AgendaLoader(sessionManager, apiClient)
+        sessionStore = SessionStore(this)
         pestana = intent.getStringExtra(EXTRA_PESTANA)
             ?.let { runCatching { Pestana.valueOf(it) }.getOrNull() } ?: Pestana.POR_HACER
 
         inicializarVistas()
 
         // Pintar al instante lo que Avisos ya cargó; luego se actualiza en segundo plano
-        AgendaLoader.ultimo?.let {
-            allActivities = it.actividades
+        appContainer.agendaRepository.snapshot.agenda?.let {
+            allActivities = it.activities
             cargado = true
             actualizarConteos()
             aplicarFiltro()
@@ -113,15 +111,15 @@ class AllActivitiesActivity : AppCompatActivity() {
 
         // Ícono de cada pestaña con el color de su estado
         listOf(
-            R.id.chipPorHacer to EstadoAlumno.POR_HACER,
-            R.id.chipEsperando to EstadoAlumno.ESPERANDO,
-            R.id.chipCalificadas to EstadoAlumno.CALIFICADA,
-            R.id.chipNoEntregadas to EstadoAlumno.NO_ENTREGADA
+            R.id.chipPorHacer to StudentStatus.TO_DO,
+            R.id.chipEsperando to StudentStatus.AWAITING_GRADE,
+            R.id.chipCalificadas to StudentStatus.GRADED,
+            R.id.chipNoEntregadas to StudentStatus.NOT_SUBMITTED
         ).forEach { (id, estado) ->
             findViewById<Chip>(id).apply {
-                setChipIconResource(estado.icono)
+                setChipIconResource(estado.icon)
                 chipIconTint = android.content.res.ColorStateList.valueOf(
-                    ActividadCardBinder.colorEstado(this@AllActivitiesActivity, estado)
+                    ActividadCardBinder.statusColor(this@AllActivitiesActivity, estado)
                 )
                 isChipIconVisible = true
                 isCheckedIconVisible = false // el fondo ya marca la selección; evita encimar íconos
@@ -163,27 +161,27 @@ class AllActivitiesActivity : AppCompatActivity() {
 
     private fun cargarTodasLasActividades() {
         swipeRefresh.isRefreshing = true
-        loader.cargar { r ->
-            if (isFinishing || isDestroyed) return@cargar
+        lifecycleScope.launch {
+            val r = appContainer.agendaRepository.loadAgenda()
             swipeRefresh.isRefreshing = false
             cargado = true
-            allActivities = r.actividades
+            allActivities = r.activities
             actualizarConteos()
             aplicarFiltro()
             when {
-                r.sesionExpirada -> Toast.makeText(this, "Tu sesión de Eminus caducó; la información puede estar incompleta.", Toast.LENGTH_LONG).show()
-                r.cursosConError > 0 || r.desdeCache -> Toast.makeText(this, "Sin conexión con Eminus; algunos cursos no se actualizaron.", Toast.LENGTH_LONG).show()
+                r.sessionExpired -> Toast.makeText(this@AllActivitiesActivity, "Tu sesión de Eminus caducó; la información puede estar incompleta.", Toast.LENGTH_LONG).show()
+                r.coursesWithErrors > 0 || r.fromCache -> Toast.makeText(this@AllActivitiesActivity, "Sin conexión con Eminus; algunos cursos no se actualizaron.", Toast.LENGTH_LONG).show()
             }
         }
     }
 
     private fun filtrar(p: Pestana): List<CourseActivityItem> = allActivities.filter {
-        val e = it.activity.estadoAlumno
+        val e = it.activity.studentStatus
         when (p) {
-            Pestana.POR_HACER -> e.esPendiente
-            Pestana.ESPERANDO -> e == EstadoAlumno.ESPERANDO
-            Pestana.CALIFICADAS -> e == EstadoAlumno.CALIFICADA
-            Pestana.NO_ENTREGADAS -> e == EstadoAlumno.NO_ENTREGADA
+            Pestana.POR_HACER -> e.isPending
+            Pestana.ESPERANDO -> e == StudentStatus.AWAITING_GRADE
+            Pestana.CALIFICADAS -> e == StudentStatus.GRADED
+            Pestana.NO_ENTREGADAS -> e == StudentStatus.NOT_SUBMITTED
         }
     }
 
@@ -205,8 +203,8 @@ class AllActivitiesActivity : AppCompatActivity() {
             Pestana.POR_HACER -> lista
                 .sortedBy { it.activity.terminoMillis ?: Long.MAX_VALUE }
                 .map { Fila.Item(it) }
-            Pestana.ESPERANDO -> agrupar(lista) { -(Plazos.parseIso(it.activity.fechaEntrega) ?: 0L) }
-            Pestana.CALIFICADAS -> agrupar(lista) { -(Plazos.parseIso(it.activity.fechaRevision) ?: it.activity.terminoMillis ?: 0L) }
+            Pestana.ESPERANDO -> agrupar(lista) { -(DueDates.parseEminusDate(it.activity.fechaEntrega) ?: 0L) }
+            Pestana.CALIFICADAS -> agrupar(lista) { -(DueDates.parseEminusDate(it.activity.fechaRevision) ?: it.activity.terminoMillis ?: 0L) }
             Pestana.NO_ENTREGADAS -> agrupar(lista) { -(it.activity.terminoMillis ?: 0L) }
         }
         adapter.submitList(filas)

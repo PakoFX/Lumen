@@ -9,7 +9,7 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
 import com.pako.eminus4.R
-import com.pako.eminus4.util.NombreMateria
+import com.pako.eminus4.domain.SubjectName
 
 /**
  * Bloque de materia para Exámenes y Foros: color, nombre, resumen, aviso (p. ej. "2 disponibles")
@@ -40,7 +40,7 @@ class BloqueHolder(itemView: View, private val alTocar: (Long) -> Unit) : Recycl
 
     fun bind(d: DatosBloque) {
         val ctx = itemView.context
-        materia.text = NombreMateria.bonito(d.materia)
+        materia.text = SubjectName.displayName(d.materia)
         resumen.text = d.resumen
         try { color.setBackgroundColor(Color.parseColor(d.colorHex)) }
         catch (_: Exception) { color.setBackgroundColor(ContextCompat.getColor(ctx, R.color.brand_uv_green)) }

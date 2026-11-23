@@ -12,7 +12,7 @@ data class ActivityDetail(
     @SerializedName("fechaTermino")          val fechaTermino: String? = null,
     @SerializedName("fechaEntrega")          val fechaEntrega: String? = null,
     @SerializedName("fechaRevision")         val fechaRevision: String? = null,
-    // Int? a propósito: null = nunca tocada, 0 = borrador (ver EstadoAlumno). Gson sin constructor
+    // Int? a propósito: null = nunca tocada, 0 = borrador (ver StudentStatus). Gson sin constructor
     // convertiría un null en 0 si el tipo fuera Int no-nulo.
     @SerializedName("estado")                val estado: Int? = null,
     @SerializedName("estadoEntrega")         val estadoEntrega: Int? = null,
